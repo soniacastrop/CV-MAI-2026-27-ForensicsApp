@@ -32,12 +32,13 @@ def threshold_mask(image: Image.Image, settings: ThresholdSettings) -> Image.Ima
         raise ValueError(f"Channel must be one of {', '.join(CHANNELS)}.")
     if not 0 <= settings.low <= settings.high <= 255:
         raise ValueError("Thresholds must satisfy 0 ≤ from ≤ to ≤ 255.")
+    #get the channel where the mask is applied
     if settings.channel == "Luminance":
         band = image.convert("L")
     else:
         band = image.convert("RGB").getchannel(settings.channel)
-    mask = band.point([255 if settings.low <= value <= settings.high else 0 for value in range(256)])
-    return ImageChops.invert(mask) if settings.invert else mask
+    mask = band.point([255 if settings.low <= value <= settings.high else 0 for value in range(256)]) #1 lo permitido por thresholds, 0 el resto
+    return ImageChops.invert(mask) if settings.invert else mask #check si hay que invertir
 
 
 class ThresholdDialog(MaskPreviewDialog):
@@ -92,7 +93,7 @@ class ThresholdTool(ForensicsTool):
             return None  # user cancelled
 
         mask = threshold_mask(image, settings)
-        output = apply_mask(image, mask)
+        output = apply_mask(image, mask)  #never fill param is used so black background
         selection = f"{settings.channel} in [{settings.low}, {settings.high}]"
         if settings.invert:
             selection = f"NOT ({selection})"

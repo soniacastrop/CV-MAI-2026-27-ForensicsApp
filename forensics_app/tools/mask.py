@@ -31,8 +31,8 @@ def binarize_mask(mask: Image.Image, size: tuple[int, int]) -> Image.Image:
     """
     gray = mask.convert("L")
     if gray.size != size:
-        gray = gray.resize(size, Image.Resampling.BILINEAR)
-    return gray.point([255 if value >= 128 else 0 for value in range(256)])
+        gray = gray.resize(size, Image.Resampling.BILINEAR) #resize to the original image
+    return gray.point([255 if value >= 128 else 0 for value in range(256)]) #128 threshold
 
 
 def load_image_file(path: str | Path) -> Image.Image:
@@ -50,12 +50,12 @@ def apply_mask(image: Image.Image, mask: Image.Image, fill: Image.Image | None =
     has_alpha = "A" in image.getbands() or "transparency" in image.info
     base = image.convert("RGBA" if has_alpha else "RGB")
     if fill is None:
-        background = Image.new(base.mode, base.size, "black")
+        background = Image.new(base.mode, base.size, "black") #if no other image seleted black bakground
     else:
         background = fill.convert(base.mode)
         if background.size != base.size:
-            background = background.resize(base.size, Image.Resampling.LANCZOS)
-    return Image.composite(base, background, mask)
+            background = background.resize(base.size, Image.Resampling.LANCZOS) #resize to the og image size
+    return Image.composite(base, background, mask) 
 
 
 def selected_fraction(mask: Image.Image) -> float:
@@ -207,7 +207,7 @@ class MaskSettings:
 
 def build_mask(settings: MaskSettings, size: tuple[int, int]) -> Image.Image:
     """Return the 0/255 ``L`` mask of the given size described by ``settings``."""
-    mask = binarize_mask(settings.mask_image, size)
+    mask = binarize_mask(settings.mask_image, size) 
     return ImageChops.invert(mask) if settings.invert else mask
 
 
@@ -282,7 +282,7 @@ class MaskTool(ForensicsTool):
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
         assert document.current is not None  # guarded by the main window
         image = document.current
-        settings = MaskDialog(parent, image, title="Apply mask").result
+        settings = MaskDialog(parent, image, title="Apply mask").result 
         if settings is None:
             return None  # user cancelled
 

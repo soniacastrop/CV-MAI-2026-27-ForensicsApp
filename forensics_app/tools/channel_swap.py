@@ -23,9 +23,9 @@ def swap_channels(image: Image.Image, order: tuple[str, str, str]) -> Image.Imag
     has_alpha = "A" in image.getbands() or "transparency" in image.info
     source = image.convert("RGBA" if has_alpha else "RGB")
     bands = dict(zip(source.getbands(), source.split()))
-    output = [bands[name] for name in order]
+    output = [bands[name] for name in order]  #coge los split channels en el orden de order
     if has_alpha:
-        return Image.merge("RGBA", (*output, bands["A"]))
+        return Image.merge("RGBA", (*output, bands["A"])) #los mergea
     return Image.merge("RGB", output)
 
 
@@ -56,8 +56,8 @@ class ChannelOrderDialog(simpledialog.Dialog):
             boxes.append(box)
         return boxes[0]
 
-    def apply(self) -> None:
-        self.result = tuple(choice.get() for choice in self.choices)
+    def apply(self) -> None: #called when user accepts the dialog
+        self.result = tuple(choice.get() for choice in self.choices) #choice.get gets the current selection of that variable in the box
 
 
 class ChannelSwapTool(ForensicsTool):
@@ -68,7 +68,7 @@ class ChannelSwapTool(ForensicsTool):
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
         assert document.current is not None  # guarded by the main window
-        if has_identical_colour_channels(document.current):
+        if has_identical_colour_channels(document.current): #example when a grayscale image is used as input
             # Checked before the dialog: a swap would add an undo step without changing any pixel.
             return ToolResult(
                 message="Nothing to swap: the image is grayscale, so R, G and B are identical.",
@@ -78,7 +78,7 @@ class ChannelSwapTool(ForensicsTool):
                     "Result": "Skipped (grayscale image)",
                 },
             )
-        order = ChannelOrderDialog(parent, title="Swap channels").result
+        order = ChannelOrderDialog(parent, title="Swap channels").result  #get the order from ui
         if order is None:
             return None  # user cancelled
         output = swap_channels(document.current, order)
