@@ -41,6 +41,40 @@ class ImageDocumentTests(unittest.TestCase):
         self.document.save(target)
         self.assertTrue(target.exists())
 
+    def test_new_edit_clears_redo_history(self) -> None:
+        self.document.apply(Image.new("RGB", (8, 6), "blue"))
+        self.document.undo()
+        self.document.apply(Image.new("RGB", (8, 6), "green"))
+        self.assertFalse(self.document.can_redo)
+        self.assertFalse(self.document.redo())
+
+    def test_undo_and_redo_report_false_when_history_is_empty(self) -> None:
+        self.assertFalse(self.document.undo())
+        self.assertFalse(self.document.redo())
+        self.assertFalse(self.document.is_modified)
+
+    def test_apply_stores_a_copy(self) -> None:
+        result = Image.new("RGB", (8, 6), "blue")
+        self.document.apply(result)
+        result.putpixel((0, 0), (0, 255, 0))
+        self.assertEqual(self.document.current.getpixel((0, 0)), (0, 0, 255))
+
+    def test_loading_clears_history(self) -> None:
+        self.document.apply(Image.new("RGB", (8, 6), "blue"))
+        self.document.load(self.source)
+        self.assertFalse(self.document.can_undo)
+        self.assertEqual(self.document.path, self.source)
+
+    def test_operations_without_image(self) -> None:
+        empty = ImageDocument()
+        self.assertFalse(empty.is_loaded)
+        self.assertFalse(empty.undo())
+        self.assertFalse(empty.reset())
+        with self.assertRaises(RuntimeError):
+            empty.apply(Image.new("RGB", (1, 1)))
+        with self.assertRaises(RuntimeError):
+            empty.save(Path(self.temporary_directory.name) / "nothing.png")
+
 
 if __name__ == "__main__":
     unittest.main()

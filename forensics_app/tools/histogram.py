@@ -5,12 +5,13 @@ from __future__ import annotations
 import tkinter as tk
 from typing import Any
 
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 import numpy as np
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
+from .modes import split_alpha
 
 
 class HistogramTool(ForensicsTool):
@@ -22,15 +23,20 @@ class HistogramTool(ForensicsTool):
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult:
         assert document.current is not None  # guarded by main window
 
-        # Convert working PIL image to a NumPy array
-        img_arr = np.array(document.current)
+        # Convert working PIL image to a NumPy array of L or RGB intensities
+        # (palette -> real colours, alpha dropped, 1/I/F -> 8-bit gray)
+        intensities, _alpha = split_alpha(document.current)
+        img_arr = np.array(intensities)
 
         # 1. Create a popup window embedded with a Matplotlib figure
         popup = tk.Toplevel(parent)
         popup.title("Intensity Histogram")
         popup.geometry("640x440")
 
-        fig, ax = plt.subplots(figsize=(6, 4))
+        # A plain Figure (not pyplot) is not kept in pyplot's global registry, so it is
+        # freed together with the popup instead of accumulating across runs.
+        fig = Figure(figsize=(6, 4))
+        ax = fig.add_subplot()
         details: dict[str, Any] = {
             "Operation": "Histogram Visualization",
             "Mode": document.current.mode,

@@ -84,9 +84,10 @@ class MainWindow:
         body = ttk.Panedwindow(container, orient="horizontal")
         body.pack(fill="both", expand=True)
 
-        sidebar = ttk.Frame(body, style="Sidebar.TFrame", padding=12, width=235)
-        sidebar.pack_propagate(False)
-        body.add(sidebar, weight=0)
+        sidebar_outer = ttk.Frame(body, style="Sidebar.TFrame", width=235)
+        sidebar_outer.pack_propagate(False)
+        body.add(sidebar_outer, weight=0)
+        sidebar = self._build_scrollable_sidebar(sidebar_outer)
         ttk.Label(sidebar, text="Forensics tools", style="Title.TLabel", background="#eef1f5").pack(
             anchor="w", pady=(0, 12)
         )
@@ -118,6 +119,39 @@ class MainWindow:
         self.results.pack(fill="both", expand=True)
 
         ttk.Label(container, textvariable=self.status, anchor="w", padding=(10, 6), relief="sunken").pack(fill="x")
+
+    def _build_scrollable_sidebar(self, parent: ttk.Frame) -> ttk.Frame:
+        """Return a frame inside a vertically scrollable canvas, so long tool lists stay reachable."""
+        canvas = tk.Canvas(parent, background="#eef1f5", highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = ttk.Frame(canvas, style="Sidebar.TFrame", padding=12)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
+
+        def on_wheel(event: tk.Event) -> None:
+            # Only scroll when the pointer is over the sidebar (bind_all catches every widget).
+            hovered = self.root.winfo_containing(event.x_root, event.y_root)
+            if hovered is None or not str(hovered).startswith(str(canvas)):
+                return
+            if canvas.yview() == (0.0, 1.0):
+                return  # everything already fits
+            if getattr(event, "num", None) == 4:
+                step = -1
+            elif getattr(event, "num", None) == 5:
+                step = 1
+            else:
+                step = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(step * 3, "units")
+
+        self.root.bind_all("<MouseWheel>", on_wheel, add="+")  # Windows / macOS
+        self.root.bind_all("<Button-4>", on_wheel, add="+")  # Linux scroll up
+        self.root.bind_all("<Button-5>", on_wheel, add="+")  # Linux scroll down
+        return inner
 
     def _bind_shortcuts(self) -> None:
         self.root.bind_all("<Control-o>", lambda _event: self.open_image())

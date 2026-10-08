@@ -79,7 +79,7 @@ class SkimageFiltersTool(ForensicsTool):
 
         # 4. Normalize back to 8-bit [0, 255]
         norm = (filtered - np.min(filtered)) / (np.max(filtered) - np.min(filtered) + 1e-8)
-        output_arr = np.clip(norm * 255.0, 0, 255).astype(np.uint8)
+        output_arr = np.clip(np.round(norm * 255.0), 0, 255).astype(np.uint8)
         output_img = Image.fromarray(output_arr, mode="L")
 
         return ToolResult(

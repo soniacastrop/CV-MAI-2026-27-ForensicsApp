@@ -10,6 +10,8 @@ from .rotate import Rotate90Tool
 from .threshold import ThresholdTool
 from .contrast_stretching import ContrastStretchingTool
 from .histogram import HistogramTool
+from .histogram_equalization import ClaheTool, HistogramEqualizationTool
+from .histogram_matching import HistogramMatchingTool
 from .canny import CannyTool
 from .skimage_filters import SkimageFiltersTool
 from .convolution import ConvolutionTool
@@ -27,6 +29,9 @@ def build_tool_registry() -> ToolRegistry:
             Rotate90Tool(),
             HistogramTool(),
             ContrastStretchingTool(),
+            HistogramEqualizationTool(),
+            ClaheTool(),
+            HistogramMatchingTool(),
             ConvolutionTool(),
             SkimageFiltersTool(),
             CannyTool(),

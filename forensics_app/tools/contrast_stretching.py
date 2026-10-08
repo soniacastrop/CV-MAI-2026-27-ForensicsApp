@@ -10,6 +10,7 @@ from PIL import Image
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
+from .modes import split_alpha
 
 
 class ContrastStretchingTool(ForensicsTool):
@@ -21,7 +22,8 @@ class ContrastStretchingTool(ForensicsTool):
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult:
         assert document.current is not None  # guarded by main window
 
-        img_arr = np.array(document.current)
+        colour, alpha = split_alpha(document.current)
+        img_arr = np.array(colour)
         details: dict[str, Any] = {
             "Operation": "Contrast Stretching",
             "Mode": document.current.mode,
@@ -46,6 +48,11 @@ class ContrastStretchingTool(ForensicsTool):
             details["B [p2, p98]"] = bands[2]
 
         output_image = Image.fromarray(stretched_arr)
+        if alpha is not None:
+            # Transparency is not intensity: carry it over unchanged
+            output_image = output_image.convert("LA" if output_image.mode == "L" else "RGBA")
+            output_image.putalpha(alpha)
+            details["Alpha"] = "Preserved (not stretched)"
 
         return ToolResult(
             image=output_image,
