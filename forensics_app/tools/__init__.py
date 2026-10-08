@@ -14,6 +14,7 @@ from .histogram_equalization import ClaheTool, HistogramEqualizationTool
 from .histogram_matching import HistogramMatchingTool
 from .canny import CannyTool
 from .skimage_filters import SkimageFiltersTool
+from .sharpen import SharpenTool
 from .convolution import ConvolutionTool
 
 
@@ -34,6 +35,7 @@ def build_tool_registry() -> ToolRegistry:
             HistogramMatchingTool(),
             ConvolutionTool(),
             SkimageFiltersTool(),
+            SharpenTool(),
             CannyTool(),
         ]
     )
