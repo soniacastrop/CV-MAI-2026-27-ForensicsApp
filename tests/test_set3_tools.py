@@ -22,7 +22,7 @@ from forensics_app.tools.convolution import (
 )
 from forensics_app.tools.skimage_filters import SkimageFiltersTool
 
-FILTERS = "forensics_app.tools.skimage_filters.simpledialog"
+FILTERS = "forensics_app.tools.skimage_filters"
 CANNY_DIALOG = "forensics_app.tools.canny.CannyDialog"
 CONV = "forensics_app.tools.convolution"
 
@@ -167,22 +167,20 @@ class ConvolutionToolTests(unittest.TestCase):
 class SkimageFiltersTests(unittest.TestCase):
     def _run(self, choice, sigma=None, floats=None, integer=None, image=None):
         """``floats`` answers successive askfloat prompts (defaults to ``[sigma]``)."""
-        with mock.patch(f"{FILTERS}.askstring", return_value=choice), mock.patch(
-            f"{FILTERS}.askfloat", side_effect=list(floats) if floats is not None else [sigma]
-        ), mock.patch(f"{FILTERS}.askinteger", return_value=integer):
+        with mock.patch(f"{FILTERS}.FilterDialog") as dialog, mock.patch(
+            f"{FILTERS}.simpledialog.askfloat", side_effect=list(floats) if floats is not None else [sigma]
+        ), mock.patch(f"{FILTERS}.simpledialog.askinteger", return_value=integer):
+            dialog.return_value.result = choice
             return SkimageFiltersTool().run(None, _document(image or _square()))
 
-    def test_sobel_and_prewitt_accept_name_or_number(self) -> None:
-        for choice, algorithm in (("sobel", "Sobel"), ("1", "Sobel"), ("prewitt", "Prewitt"), ("2", "Prewitt")):
+    def test_sobel_and_prewitt_detect_edges(self) -> None:
+        for choice, algorithm in (("sobel", "Sobel"), ("prewitt", "Prewitt")):
             with self.subTest(choice=choice):
                 result = self._run(choice)
                 self.assertTrue(result.details["Algorithm"].startswith(algorithm))
                 arr = np.asarray(result.image)
                 self.assertEqual(arr.max(), 255)  # normalized to full range
                 self.assertEqual(arr[20, 20], 0)  # flat interior has no edges
-
-    def test_choice_is_case_and_whitespace_insensitive(self) -> None:
-        self.assertIn("Sobel", self._run("  SoBeL ").details["Algorithm"])
 
     def test_gaussian_uses_sigma_and_blurs(self) -> None:
         result = self._run("gaussian", sigma=3.0)
@@ -199,42 +197,20 @@ class SkimageFiltersTests(unittest.TestCase):
         self.assertIsNone(result.image)
         self.assertEqual(result.details["Error"], "Invalid choice")
 
-    def test_scharr_accepts_name_or_number(self) -> None:
-        for choice in ("scharr", "5"):
-            with self.subTest(choice=choice):
-                result = self._run(choice)
-                self.assertEqual(result.details["Algorithm"], "Scharr edge detector")
-                arr = np.asarray(result.image)
-                self.assertEqual(arr.max(), 255)
-                self.assertEqual(arr[20, 20], 0)
+    def test_scharr_detects_edges(self) -> None:
+        result = self._run("scharr")
+        self.assertEqual(result.details["Algorithm"], "Scharr edge detector")
+        arr = np.asarray(result.image)
+        self.assertEqual(arr.max(), 255)
+        self.assertEqual(arr[20, 20], 0)
 
     def test_median_removes_salt_noise_and_keeps_scale(self) -> None:
         noisy = Image.new("L", (30, 30), 100)
         for xy in ((5, 5), (15, 20), (25, 8)):
             noisy.putpixel(xy, 255)  # isolated salt pixels
-        for choice in ("median", "4"):
-            with self.subTest(choice=choice):
-                result = self._run(choice, integer=2, image=noisy)
-                self.assertEqual(result.details["Radius"], 2)
-                self.assertTrue(np.all(np.asarray(result.image) == 100))  # not stretched to 0..255
-
-    def test_unsharp_mask_increases_edge_contrast(self) -> None:
-        step = np.zeros((20, 40), dtype=np.uint8)
-        step[:, :20], step[:, 20:] = 80, 170
-        image = Image.fromarray(step, mode="L")
-        for choice in ("unsharp_mask", "6", "unsharp"):
-            with self.subTest(choice=choice):
-                result = self._run(choice, floats=[2.0, 1.5], image=image)
-                arr = np.asarray(result.image).astype(int)
-                self.assertEqual(result.details["Radius"], 2.0)
-                self.assertEqual(result.details["Amount"], 1.5)
-                self.assertLess(arr[10, 18], 80)  # dark side undershoots
-                self.assertGreater(arr[10, 21], 170)  # bright side overshoots
-                self.assertEqual(arr[10, 2], 80)  # flat areas keep their level (no stretching)
-
-    def test_unsharp_mask_cancel_at_either_prompt(self) -> None:
-        self.assertIsNone(self._run("unsharp_mask", floats=[None]))
-        self.assertIsNone(self._run("unsharp_mask", floats=[1.0, None]))
+        result = self._run("median", integer=2, image=noisy)
+        self.assertEqual(result.details["Radius"], 2)
+        self.assertTrue(np.all(np.asarray(result.image) == 100))  # not stretched to 0..255
 
     def test_median_cancel_returns_none(self) -> None:
         self.assertIsNone(self._run("median", integer=None))
@@ -242,16 +218,14 @@ class SkimageFiltersTests(unittest.TestCase):
     def test_otsu_gives_binary_image_split_between_two_levels(self) -> None:
         arr = np.full((20, 40), 60, dtype=np.uint8)
         arr[:, 30:] = 200  # 25% bright
-        for choice in ("threshold_otsu", "7", "otsu"):
-            with self.subTest(choice=choice):
-                result = self._run(choice, image=Image.fromarray(arr, mode="L"))
-                out = np.asarray(result.image)
-                self.assertEqual(set(np.unique(out)), {0, 255})
-                self.assertTrue(np.all(out[:, 30:] == 255))
-                self.assertTrue(np.all(out[:, :30] == 0))
-                threshold = float(result.details["Otsu threshold"].split(" ")[0])
-                self.assertTrue(60 <= threshold < 200)
-                self.assertEqual(result.details["Pixels above"], "25.00%")
+        result = self._run("threshold_otsu", image=Image.fromarray(arr, mode="L"))
+        out = np.asarray(result.image)
+        self.assertEqual(set(np.unique(out)), {0, 255})
+        self.assertTrue(np.all(out[:, 30:] == 255))
+        self.assertTrue(np.all(out[:, :30] == 0))
+        threshold = float(result.details["Otsu threshold"].split(" ")[0])
+        self.assertTrue(60 <= threshold < 200)
+        self.assertEqual(result.details["Pixels above"], "25.00%")
 
 
 def _gray_square_on_blue(size: int = 40) -> Image.Image:

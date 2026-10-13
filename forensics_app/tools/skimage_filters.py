@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import simpledialog
+from tkinter import simpledialog, ttk
 from typing import Any
 
 import numpy as np
@@ -14,28 +14,48 @@ from skimage.morphology import disk
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
 
+# Filter key -> label shown in the selection dialog.
+FILTERS = {
+    "sobel": "Sobel (edges)",
+    "prewitt": "Prewitt (edges)",
+    "scharr": "Scharr (edges)",
+    "gaussian": "Gaussian blur",
+    "median": "Median (noise removal)",
+    "threshold_otsu": "Otsu threshold (binary)",
+}
+
+
+class FilterDialog(simpledialog.Dialog):
+    """Let the user pick one of the available filters."""
+
+    def body(self, master: tk.Frame) -> tk.Widget:
+        self.choice = tk.StringVar(value="gaussian")
+        ttk.Label(master, text="Filter:").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        first: tk.Widget | None = None
+        for row, (key, label) in enumerate(FILTERS.items(), start=1):
+            button = ttk.Radiobutton(master, text=label, value=key, variable=self.choice)
+            button.grid(row=row, column=0, sticky="w")
+            first = first or button
+        assert first is not None
+        return first
+
+    def apply(self) -> None:
+        self.result = self.choice.get()
+
 
 class SkimageFiltersTool(ForensicsTool):
     tool_id = "skimage_filters"
     title = "Filters (skimage.filters)"
     category = "Set 3: Edge Detection"
-    description = "Apply Sobel, Prewitt, Scharr, Gaussian, median, unsharp mask or Otsu threshold from skimage."
+    description = "Apply Sobel, Prewitt, Scharr, Gaussian, median or Otsu threshold from skimage."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
         assert document.current is not None
 
         # 1. Ask the user which filter they want to apply
-        filter_choice = simpledialog.askstring(
-            "Filter Selection",
-            "Choose a filter (name or number):\n"
-            "1. sobel\n2. prewitt\n3. gaussian\n4. median\n5. scharr\n6. unsharp_mask\n7. threshold_otsu",
-            initialvalue="gaussian",
-            parent=parent,
-        )
+        filter_choice = FilterDialog(parent, title="Filter Selection").result
         if not filter_choice:
             return None
-
-        filter_choice = filter_choice.strip().lower()
 
         # 2. Convert active image to float representation in [0, 1]
         gray = document.current.convert("L")
@@ -46,19 +66,19 @@ class SkimageFiltersTool(ForensicsTool):
             "Selection": filter_choice,
         }
         # Edge filters produce arbitrary magnitudes and are min-max normalized for display;
-        # filters that return intensities in [0, 1] (median, unsharp, Otsu) keep their scale.
+        # filters that return intensities in [0, 1] (median, Otsu) keep their scale.
         normalize = True
 
         # 3. Apply the selected filter
-        if filter_choice in ("1", "sobel"):
+        if filter_choice == "sobel":
             filtered = filters.sobel(img_arr)
             details["Algorithm"] = "Sobel edge detector"
 
-        elif filter_choice in ("2", "prewitt"):
+        elif filter_choice == "prewitt":
             filtered = filters.prewitt(img_arr)
             details["Algorithm"] = "Prewitt edge detector"
 
-        elif filter_choice in ("3", "gaussian"):
+        elif filter_choice == "gaussian":
             # Configurable parameter: sigma
             sigma_val = simpledialog.askfloat(
                 "Gaussian Parameter",
@@ -75,7 +95,7 @@ class SkimageFiltersTool(ForensicsTool):
             details["Algorithm"] = "Gaussian blur filter"
             details["Configurable Sigma"] = sigma_val
 
-        elif filter_choice in ("4", "median"):
+        elif filter_choice == "median":
             radius = simpledialog.askinteger(
                 "Median Parameter",
                 "Enter neighbourhood radius in pixels (disk footprint):",
@@ -92,39 +112,11 @@ class SkimageFiltersTool(ForensicsTool):
             details["Algorithm"] = "Median filter"
             details["Radius"] = radius
 
-        elif filter_choice in ("5", "scharr"):
+        elif filter_choice == "scharr":
             filtered = filters.scharr(img_arr)
             details["Algorithm"] = "Scharr edge detector"
 
-        elif filter_choice in ("6", "unsharp_mask", "unsharp mask", "unsharp"):
-            radius_val = simpledialog.askfloat(
-                "Unsharp Mask Parameter",
-                "Enter blur radius (Gaussian sigma) of the mask:",
-                initialvalue=1.0,
-                minvalue=0.1,
-                maxvalue=25.0,
-                parent=parent,
-            )
-            if radius_val is None:
-                return None
-            amount = simpledialog.askfloat(
-                "Unsharp Mask Parameter",
-                "Enter amount (how strongly edges are boosted):",
-                initialvalue=1.0,
-                minvalue=0.0,
-                maxvalue=10.0,
-                parent=parent,
-            )
-            if amount is None:
-                return None
-
-            filtered = filters.unsharp_mask(img_arr, radius=radius_val, amount=amount)
-            normalize = False
-            details["Algorithm"] = "Unsharp mask (sharpening)"
-            details["Radius"] = radius_val
-            details["Amount"] = amount
-
-        elif filter_choice in ("7", "threshold_otsu", "otsu", "threshold otsu"):
+        elif filter_choice == "threshold_otsu":
             threshold = float(filters.threshold_otsu(img_arr))
             filtered = (img_arr > threshold).astype(np.float64)
             normalize = False
@@ -136,8 +128,7 @@ class SkimageFiltersTool(ForensicsTool):
             return ToolResult(
                 image=None,
                 message=(
-                    f"Unknown filter option: '{filter_choice}'. Choose sobel, prewitt, gaussian, "
-                    "median, scharr, unsharp_mask or threshold_otsu."
+                    f"Unknown filter option: '{filter_choice}'. Choose one of: {', '.join(FILTERS)}."
                 ),
                 details={"Error": "Invalid choice"},
             )
