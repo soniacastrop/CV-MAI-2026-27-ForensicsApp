@@ -276,7 +276,7 @@ class MaskDialog(MaskPreviewDialog):
 class MaskTool(ForensicsTool):
     tool_id = "mask"
     title = "Apply mask"
-    category = "Set2"
+    category = "Set 2: Image Processing"
     description = "Keep the image where a mask is white; fill the rest with black or another image."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

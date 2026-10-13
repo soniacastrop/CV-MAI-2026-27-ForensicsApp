@@ -63,7 +63,7 @@ class ChannelOrderDialog(simpledialog.Dialog):
 class ChannelSwapTool(ForensicsTool):
     tool_id = "channel_swap"
     title = "Swap image channels"
-    category = "Set2"
+    category = "Set 2: Image Processing"
     description = "Rearrange the R, G and B channels of the image (e.g. swap red and blue)."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

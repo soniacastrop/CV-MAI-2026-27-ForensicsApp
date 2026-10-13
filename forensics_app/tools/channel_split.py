@@ -70,7 +70,7 @@ def plot_channels(channels: list[tuple[str, Image.Image]]) -> Image.Image: #gets
 class ChannelSplitTool(ForensicsTool):
     tool_id = "channel_split"
     title = "Split image channels"
-    category = "Set2"
+    category = "Set 2: Image Processing"
     description = "Plot each colour channel of the image as a separate grayscale panel."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult:

@@ -81,6 +81,10 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(
             [tool.tool_id for tool in set2],
             [
+                "channel_split",
+                "channel_swap",
+                "threshold",
+                "mask",
                 "histogram",
                 "contrast_stretching",
                 "histogram_equalization",

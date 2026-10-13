@@ -82,7 +82,7 @@ class ThresholdDialog(MaskPreviewDialog):
 class ThresholdTool(ForensicsTool):
     tool_id = "threshold"
     title = "Threshold image"
-    category = "Set2"
+    category = "Set 2: Image Processing"
     description = "Keep pixels whose channel value is in a range (or outside it) and black out the rest."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
