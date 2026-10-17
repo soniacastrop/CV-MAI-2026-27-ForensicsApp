@@ -16,6 +16,8 @@ from .canny import CannyTool
 from .skimage_filters import SkimageFiltersTool
 from .sharpen import SharpenTool
 from .convolution import ConvolutionTool
+from .hog import HogTool
+from .hog_detection import HogDetectionTool
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -37,6 +39,8 @@ def build_tool_registry() -> ToolRegistry:
             SkimageFiltersTool(),
             SharpenTool(),
             CannyTool(),
+            HogTool(),
+            HogDetectionTool(),
         ]
     )
 

@@ -21,3 +21,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+instructions/
+images/
