@@ -31,6 +31,7 @@ from forensics_app.tools.hog_detection import (
     parse_scales,
     render_heatmap,
     resize_template,
+    usable_scales,
 )
 
 HOG = "forensics_app.tools.hog"
@@ -289,9 +290,24 @@ class DetectionFunctionTests(unittest.TestCase):
     def test_parse_scales(self) -> None:
         self.assertEqual(parse_scales("1.25, 0.75,1, 1"), (0.75, 1.0, 1.25))
         self.assertEqual(parse_scales("2"), (2.0,))
-        for bad in ("", "a, 1", "0", "50"):
+        self.assertEqual(parse_scales("0.05, 50"), (0.05, 50.0))  # no fixed range: usability depends on the image
+        for bad in ("", "a, 1", "0", "-1, 2"):
             with self.assertRaises(ValueError, msg=bad):
                 parse_scales(bad)
+
+    def test_usable_scales(self) -> None:
+        # 64 × 128 window, 16 px blocks: smallest 16 / 64 = 0.25; 300 × 400 image: largest min(300/64, 400/128) = 3.12
+        self.assertEqual(usable_scales((64, 128), (300, 400), 8, 2), (0.25, 3.12))
+        # 8 px blocks: 0.12 works because 64 × 0.12 = 7.68 is rounded to 8 px; 0.11 gives 7 px
+        self.assertEqual(usable_scales((64, 128), (300, 400), 4, 2), (0.12, 3.12))
+        self.assertIsNone(usable_scales((64, 128), (20, 30), 8, 2))  # cannot fit and hold a block at once
+
+    def test_usable_scales_bounds_really_work(self) -> None:
+        template = Image.fromarray(_figure(), mode="L")  # 24 × 48
+        low, high = usable_scales(template.size, _scene().size, 4, 2)  # 140 × 120 image
+        settings = DetectionSettings(pixels_per_cell=4, step=8, scales=(low - 0.01, low, high, high + 0.01))
+        _, score_maps = detect(_scene(), template, settings)
+        self.assertEqual([m.scale for m in score_maps], [low, high])  # just outside the range is skipped
 
     def test_window_larger_than_image_is_rejected(self) -> None:
         template = Image.fromarray(_figure(), mode="L")

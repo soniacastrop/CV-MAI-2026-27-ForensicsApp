@@ -25,7 +25,6 @@ TEMPLATE_TYPES = [
 STEP_RANGE = (1, 128)
 STEP_CELLS_RANGE = (1, 16)  # fast variant: step counted in cells
 WINDOW_RANGE = (4, 4096)
-SCALE_RANGE = (0.1, 10.0)
 
 # Search variants (key -> (label, explanation))
 VARIANTS = {
@@ -226,9 +225,14 @@ def comparable_score(metric: str, score: float, features: int) -> float:
 
 def scaled_settings(settings: DetectionSettings, template: Image.Image, scale: float) -> DetectionSettings:
     """``settings`` with the window size multiplied by ``scale``."""
-    width = max(1, round((settings.window_width or template.width) * scale))
-    height = max(1, round((settings.window_height or template.height) * scale))
+    window = (settings.window_width or template.width, settings.window_height or template.height)
+    width, height = scaled_size(window, scale)
     return replace(settings, window_width=width, window_height=height)
+
+
+def scaled_size(window: tuple[int, int], scale: float) -> tuple[int, int]:
+    """Window ``(width, height)`` multiplied by ``scale``, rounded to whole pixels."""
+    return max(1, round(window[0] * scale)), max(1, round(window[1] * scale))
 
 
 def detect(
@@ -273,9 +277,29 @@ def parse_scales(text: str) -> tuple[float, ...]:
         raise ValueError("Scales must be numbers separated by commas, e.g. 0.75, 1, 1.25.") from None
     if not scales:
         raise ValueError("Enter at least one scale.")
-    if not all(SCALE_RANGE[0] <= s <= SCALE_RANGE[1] for s in scales):
-        raise ValueError(f"Each scale must be between {SCALE_RANGE[0]:g} and {SCALE_RANGE[1]:g}.")
+    if scales[0] <= 0:
+        raise ValueError("Scales must be greater than 0.")
     return tuple(scales)
+
+
+def usable_scales(
+    window: tuple[int, int], image: tuple[int, int], pixels_per_cell: int, cells_per_block: int
+) -> tuple[float, float] | None:
+    """The smallest and largest scale (to 2 decimals) whose window can be searched, or ``None`` if none can.
+
+    ``window`` and ``image`` are ``(width, height)``. A scaled window must still hold one block
+    (pixels per cell × cells per block) on its shorter side and still fit inside the image. Sizes are
+    rounded exactly as during the search (``scaled_size``), so the bounds match what really runs.
+    """
+    min_side = pixels_per_cell * cells_per_block
+
+    def fits(scale: float) -> bool:
+        width, height = scaled_size(window, scale)
+        return min(width, height) >= min_side and width <= image[0] and height <= image[1]
+
+    upper = min(image[0] / window[0], image[1] / window[1])  # beyond this the window cannot fit
+    usable = [k / 100 for k in range(1, int(upper * 100) + 2) if fits(k / 100)]
+    return (usable[0], usable[-1]) if usable else None
 
 
 def match_strength(score_map: ScoreMap, metric: str) -> np.ndarray:
@@ -335,9 +359,17 @@ class VariantDialog(simpledialog.Dialog):
 class DetectionDialog(simpledialog.Dialog):
     """Ask for the window size, HOG parameters, sliding step, metrics and display of one variant."""
 
-    def __init__(self, parent: tk.Misc, title: str, template: Image.Image, variant: str = "exact") -> None:
+    def __init__(
+        self,
+        parent: tk.Misc,
+        title: str,
+        template: Image.Image,
+        variant: str = "exact",
+        image_size: tuple[int, int] | None = None,
+    ) -> None:
         self.template = template
         self.variant = variant
+        self.image_size = image_size  # (width, height) of the searched image, for the usable scales
         super().__init__(parent, title=title)
 
     def body(self, master: tk.Frame) -> tk.Widget:
@@ -383,8 +415,13 @@ class DetectionDialog(simpledialog.Dialog):
             scales, text="The template is resized to each scaled window, e.g. 0.75, 1, 1.25, 1.5.\n"
             "Each scale is a full search, so more scales = slower."
         ).pack(anchor="w")
+        self._usable_label = ttk.Label(scales, foreground="#1a5fb4")
+        self._usable_label.pack(anchor="w")
         self.window_width.trace_add("write", lambda *_: self._sync_height())
         self._sync_height()
+        for var in (self.window_width, self.window_height, self.cell, self.block):
+            var.trace_add("write", lambda *_: self._update_usable())
+        self._update_usable()
 
         rows = (
             ("Orientations (histogram bins):", self.orientations, ORIENTATIONS_RANGE),
@@ -446,6 +483,30 @@ class DetectionDialog(simpledialog.Dialog):
             return
         self.window_height.set(str(max(1, round(width * self.template.height / self.template.width))))
 
+    def _usable_range(self) -> tuple[float, float] | None | str:
+        """Usable scales for the current fields; a message string while a field is not a valid number."""
+        if self.image_size is None:
+            return "unknown image size"
+        try:
+            window = (int(self.window_width.get()), int(self.window_height.get()))
+            cell, block = int(self.cell.get()), int(self.block.get())
+        except ValueError:
+            return "enter whole numbers above"
+        if min(window) < 1 or cell < 1 or block < 1:
+            return "enter positive sizes above"
+        return usable_scales(window, self.image_size, cell, block)
+
+    def _update_usable(self) -> None:
+        usable = self._usable_range()
+        if isinstance(usable, str):
+            text = f"Usable scales: – ({usable})"
+        elif usable is None:
+            text = "Usable scales: none (the window cannot both fit the image and hold one block)"
+        else:
+            width, height = self.image_size
+            text = f"Usable scales for this {width} × {height} image: {usable[0]:g} – {usable[1]:g}"
+        self._usable_label.configure(text=text)
+
     def _sync_heatmap(self) -> None:
         self._heatmap_box.configure(state="readonly" if self.display.get() == "heatmap" else "disabled")
 
@@ -472,6 +533,14 @@ class DetectionDialog(simpledialog.Dialog):
         except ValueError as error:
             messagebox.showerror("Person detection", str(error), parent=self)
             return False
+        usable = self._usable_range()
+        if not isinstance(usable, str):  # scales outside the range are skipped; refuse only if all would be
+            if usable is None or not any(usable[0] <= s <= usable[1] for s in scales):
+                shown = "none" if usable is None else f"{usable[0]:g} – {usable[1]:g}"
+                messagebox.showerror(
+                    "Person detection", f"None of the scales can be searched (usable: {shown}).", parent=self
+                )
+                return False
         metrics = tuple(key for key, var in self.metrics.items() if var.get())
         if not metrics and self.display.get() == "boxes":
             messagebox.showerror("Person detection", "Select at least one similarity metric.", parent=self)
@@ -520,7 +589,7 @@ class HogDetectionTool(ForensicsTool):
 
         # 3. The chosen variant's options: window size, HOG parameters, step, metrics and display
         title = f"Person detection (HOG) – {'fast' if variant == 'fast' else 'exact'}"
-        settings = DetectionDialog(parent, title, template, variant).result
+        settings = DetectionDialog(parent, title, template, variant, document.current.size).result
         if settings is None:
             return None
 
