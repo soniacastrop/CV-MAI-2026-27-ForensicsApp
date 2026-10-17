@@ -248,15 +248,19 @@ class HogDialog(simpledialog.Dialog):
             first = first or box
         self._orientations_box = first
         ttk.Label(master, text="Show as:").grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        for row, (key, text) in enumerate(DISPLAYS.items(), start=4):
+        row = 4
+        for key, text in DISPLAYS.items():
             ttk.Radiobutton(master, text=text, value=key, variable=self.display, command=self._sync).grid(
                 row=row, column=0, columnspan=2, sticky="w", padx=(12, 0)
             )
-        compare = ttk.Frame(master)
-        compare.grid(row=8, column=0, columnspan=2, sticky="w", padx=(32, 0))
-        ttk.Label(compare, text="Orientations to compare:").pack(side="left")
-        self._compare_entry = ttk.Entry(compare, textvariable=self.compare, width=14)
-        self._compare_entry.pack(side="left", padx=(6, 0))
+            row += 1
+            if key == "compare":  # its own option sits right under it
+                compare = ttk.Frame(master)
+                compare.grid(row=row, column=0, columnspan=2, sticky="w", padx=(32, 0), pady=(0, 2))
+                ttk.Label(compare, text="Orientations to compare:").pack(side="left")
+                self._compare_entry = ttk.Entry(compare, textvariable=self.compare, width=14)
+                self._compare_entry.pack(side="left", padx=(6, 0))
+                row += 1
         self._sync()
         return first
 
