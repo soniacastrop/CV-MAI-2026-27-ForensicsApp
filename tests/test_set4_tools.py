@@ -6,7 +6,19 @@ import numpy as np
 from PIL import Image
 
 from forensics_app.core import ImageDocument
-from forensics_app.tools.hog import HogSettings, HogTool, extract_hog, render_hog, to_rgb_array
+from skimage.feature import hog
+
+from forensics_app.tools.hog import (
+    CellInspector,
+    HogSettings,
+    HogTool,
+    cell_histograms,
+    comparison_figure,
+    extract_hog,
+    parse_orientations,
+    render_hog,
+    to_rgb_array,
+)
 from forensics_app.tools.hog_detection import (
     BOX_COLOURS,
     DetectionSettings,
@@ -21,7 +33,8 @@ from forensics_app.tools.hog_detection import (
     resize_template,
 )
 
-HOG_DIALOG = "forensics_app.tools.hog.HogDialog"
+HOG = "forensics_app.tools.hog"
+HOG_DIALOG = f"{HOG}.HogDialog"
 DET = "forensics_app.tools.hog_detection"
 
 
@@ -108,6 +121,107 @@ class HogToolTests(unittest.TestCase):
         with mock.patch(HOG_DIALOG) as dialog:
             dialog.return_value.result = None
             self.assertIsNone(HogTool().run(mock.Mock(), _document(Image.new("L", (32, 32)))))
+
+
+def _stripes(vertical: bool = True) -> Image.Image:
+    """Stripes 4 px wide: vertical stripes only have horizontal gradients (0°), horizontal ones only vertical (90°)."""
+    arr = np.zeros((32, 32), dtype=np.uint8)
+    if vertical:
+        arr[:, (np.arange(32) // 4) % 2 == 1] = 255
+    else:
+        arr[(np.arange(32) // 4) % 2 == 1, :] = 255
+    return Image.fromarray(arr, mode="L")
+
+
+class CellHistogramTests(unittest.TestCase):
+    def test_matches_skimage_per_cell_histograms(self) -> None:
+        # skimage with 1×1 blocks and L1 normalization returns each cell's histogram divided by its sum
+        image = _scene()
+        for orientations, cell in ((9, 8), (4, 6), (16, 5)):
+            ours = cell_histograms(image, cell, orientations)
+            theirs = hog(
+                to_rgb_array(image),
+                orientations=orientations,
+                pixels_per_cell=(cell, cell),
+                cells_per_block=(1, 1),
+                block_norm="L1",
+                feature_vector=False,
+                channel_axis=2,
+            )[:, :, 0, 0, :]
+            np.testing.assert_allclose(ours / (ours.sum(axis=2, keepdims=True) + 1e-5), theirs, atol=1e-6)
+
+    def test_stripe_direction_lands_in_the_expected_bin(self) -> None:
+        vertical = cell_histograms(_stripes(vertical=True), 8, 4)  # bins centred at 22.5, 67.5, 112.5, 157.5
+        horizontal = cell_histograms(_stripes(vertical=False), 8, 4)
+        self.assertTrue((vertical[1:-1, 1:-1, 0] > 0).all())  # 0° bin: horizontal gradient
+        self.assertEqual(vertical[..., 1:].sum(), 0)
+        self.assertTrue((horizontal[1:-1, 1:-1, 2] > 0).all())  # 90° falls in the [90, 135) bin
+        self.assertEqual(horizontal[..., [0, 1, 3]].sum(), 0)
+
+    def test_flat_image_has_empty_histograms(self) -> None:
+        self.assertFalse(cell_histograms(Image.new("RGB", (16, 16), (90, 90, 90)), 4, 9).any())
+
+
+class ComparisonTests(unittest.TestCase):
+    def test_parse_orientations(self) -> None:
+        self.assertEqual(parse_orientations("2, 4, 9"), (2, 4, 9))
+        self.assertEqual(parse_orientations("9;2, 9"), (9, 2))
+        for bad in ("", "a", "0", "2, 50", "1,2,3,4,5,6,7"):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_orientations(bad)
+
+    def test_figure_has_original_plus_one_panel_per_count(self) -> None:
+        image = Image.fromarray(_figure(), mode="L")
+        settings = HogSettings(pixels_per_cell=6, cells_per_block=2, compare_orientations=(2, 4, 9))
+        figure, lengths = comparison_figure(image, settings)
+        titles = [ax.get_title() for ax in figure.axes]
+        self.assertEqual(titles[0], "Original image")
+        self.assertEqual(len(titles), 4)
+        self.assertTrue(titles[3].startswith("HOG, orientations=9"))
+        self.assertEqual(lengths, {2: 3 * 7 * 2 * 2 * 2, 4: 3 * 7 * 2 * 2 * 4, 9: 3 * 7 * 2 * 2 * 9})
+
+    def test_tool_compare_opens_popup_and_keeps_image(self) -> None:
+        settings = HogSettings(pixels_per_cell=6, cells_per_block=2, display="compare")
+        with mock.patch(HOG_DIALOG, **{"return_value.result": settings}), mock.patch(f"{HOG}.show_figure") as show:
+            result = HogTool().run(mock.Mock(), _document(Image.fromarray(_figure(), mode="L")))
+        show.assert_called_once()
+        self.assertIsNone(result.image)
+        self.assertIn("Features (orientations=4)", result.details)
+
+
+class CellInspectorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = HogSettings(orientations=4, pixels_per_cell=8, cells_per_block=2)
+        self.inspector = CellInspector(_stripes(vertical=True), self.settings)
+
+    def test_starts_on_the_strongest_cell(self) -> None:
+        totals = self.inspector.hist.sum(axis=2)
+        self.assertEqual(totals[self.inspector.selected], totals.max())
+
+    def test_click_selects_the_cell_and_plots_its_histogram(self) -> None:
+        ax = self.inspector.ax_image
+        event = mock.Mock(inaxes=ax, xdata=20.0, ydata=13.0)  # x 20 -> col 2, y 13 -> row 1
+        with mock.patch.object(self.inspector.figure, "canvas"):
+            self.inspector.on_click(event)
+        self.assertEqual(self.inspector.selected, (1, 2))
+        self.assertEqual(self.inspector.highlight.get_xy(), (15.5, 7.5))
+        heights = [bar.get_height() for bar in self.inspector.ax_hist.patches]
+        np.testing.assert_allclose(heights, self.inspector.hist[1, 2])
+        self.assertIn("dominant bin: 22.5°", self.inspector.ax_hist.get_title())
+
+    def test_clicks_outside_the_image_are_ignored(self) -> None:
+        before = self.inspector.selected
+        self.inspector.on_click(mock.Mock(inaxes=self.inspector.ax_hist, xdata=1.0, ydata=1.0))
+        self.inspector.on_click(mock.Mock(inaxes=self.inspector.ax_image, xdata=None, ydata=None))
+        self.assertEqual(self.inspector.selected, before)
+        self.assertIsNone(self.inspector.cell_at(40.0, 3.0))  # past the last column of cells
+
+    def test_tool_inspect_keeps_image(self) -> None:
+        settings = HogSettings(orientations=4, pixels_per_cell=8, cells_per_block=2, display="inspect")
+        with mock.patch(HOG_DIALOG, **{"return_value.result": settings}), mock.patch(f"{HOG}.show_figure") as show:
+            result = HogTool().run(mock.Mock(), _document(_stripes()))
+        self.assertIsNone(result.image)
+        self.assertIsInstance(show.return_value.inspector, CellInspector)
 
 
 class DetectionFunctionTests(unittest.TestCase):
