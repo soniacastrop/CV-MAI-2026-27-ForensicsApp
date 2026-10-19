@@ -33,10 +33,28 @@ from forensics_app.tools.hog_detection import (
     resize_template,
     usable_scales,
 )
+from forensics_app.tools.ncc import (
+    NccSettings,
+    NormalizedCrossCorrelationTool,
+    compute_ncc,
+    ncc_comparison_figure,
+    ncc_to_image,
+    rotate_template,
+)
+from forensics_app.tools.template_matching import (
+    CONFIG_DISPLAYS,
+    TemplateMatchingConfigTool,
+    TemplateMatchingSettings,
+    config_comparison_figure,
+    render_matches,
+    threshold_ncc,
+)
 
 HOG = "forensics_app.tools.hog"
 HOG_DIALOG = f"{HOG}.HogDialog"
 DET = "forensics_app.tools.hog_detection"
+NCC = "forensics_app.tools.ncc"
+TMPL = "forensics_app.tools.template_matching"
 
 
 def _document(image: Image.Image) -> ImageDocument:
@@ -450,6 +468,133 @@ class FastVariantTests(unittest.TestCase):
             # y = 20 is off the 8-px grid: the best the fast variant can do is 16 or 24 (both 4 px away)
             self.assertIn(detection.row, (16, 24), detection.method)
             self.assertEqual(detection.col, 64)
+
+
+class TemplateMatchingFunctionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.scene = _scene(top=40, left=56)
+        self.template = Image.fromarray(_figure(), mode="L")  # 24 wide x 48 tall
+
+    def test_ncc_padded_keeps_image_size_and_peaks_at_template_centre(self) -> None:
+        corr, tmpl_gray = compute_ncc(self.scene, self.template, pad_input=True)
+        self.assertEqual(corr.shape, (120, 140))
+        self.assertEqual(tmpl_gray.shape, (48, 24))
+        self.assertAlmostEqual(float(corr.max()), 1.0, places=5)
+        peak_r, peak_c = np.unravel_index(int(np.argmax(corr)), corr.shape)
+        # With pad_input=True, match_template centres the template at (top + H//2, left + W//2)
+        self.assertEqual((int(peak_r), int(peak_c)), (40 + 24, 56 + 12))
+
+    def test_ncc_unpadded_peaks_at_top_left(self) -> None:
+        corr, _ = compute_ncc(self.scene, self.template, pad_input=False)
+        self.assertEqual(corr.shape, (120 - 48 + 1, 140 - 24 + 1))
+        peak_r, peak_c = np.unravel_index(int(np.argmax(corr)), corr.shape)
+        self.assertEqual((int(peak_r), int(peak_c)), (40, 56))
+
+    def test_template_larger_than_image_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            compute_ncc(Image.new("L", (10, 10)), self.template)
+
+    def test_rotate_template_changes_orientation(self) -> None:
+        unrotated = rotate_template(self.template, 0.0)
+        rotated_180 = rotate_template(self.template, 180.0)
+        np.testing.assert_allclose(rotated_180, np.rot90(unrotated, 2), atol=1e-6)
+
+    def test_threshold_ncc_and_render_styles(self) -> None:
+        corr, _ = compute_ncc(self.scene, self.template, pad_input=True)
+        mask = threshold_ncc(corr, 0.95)
+        self.assertEqual(int(mask.sum()), 1)
+        with self.assertRaises(ValueError):
+            threshold_ncc(corr, 1.5)
+        for style in CONFIG_DISPLAYS:
+            if style == "popup":
+                continue
+            rendered = render_matches(self.scene, corr, 0.95, style)
+            self.assertEqual(rendered.size, self.scene.size)
+        with self.assertRaises(ValueError):
+            render_matches(self.scene, corr, 0.95, "unknown_style")
+
+    def test_ncc_to_image_scales_full_range(self) -> None:
+        corr, _ = compute_ncc(self.scene, self.template, pad_input=True)
+        img = ncc_to_image(corr)
+        arr = np.asarray(img)
+        self.assertEqual((img.mode, img.size), ("L", self.scene.size))
+        self.assertEqual((int(arr.min()), int(arr.max())), (0, 255))
+
+    def test_comparison_figures_have_expected_panels(self) -> None:
+        corr, tmpl_gray = compute_ncc(self.scene, self.template, pad_input=True)
+        fig3 = ncc_comparison_figure(self.scene, tmpl_gray, corr)
+        self.assertEqual([ax.get_title() for ax in fig3.axes], [
+            "Original image",
+            "Template",
+            "Normalized cross-correlation image",
+        ])
+        fig4 = config_comparison_figure(
+            self.scene, tmpl_gray, corr, TemplateMatchingSettings(angle=15.0, threshold=0.8)
+        )
+        self.assertEqual(len(fig4.axes), 4)
+        self.assertIn("angle=15°", fig4.axes[1].get_title())
+        self.assertIn("0.8", fig4.axes[3].get_title())
+
+
+class TemplateMatchingToolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.scene = _scene(top=40, left=56)
+        self.template = Image.fromarray(_figure(), mode="L")
+
+    def test_ncc_tool_returns_correlation_image(self) -> None:
+        with (
+            mock.patch(f"{NCC}.filedialog.askopenfilename", return_value="template.png"),
+            mock.patch(f"{NCC}.Image.open") as opened,
+            mock.patch(f"{NCC}.NccDialog") as dialog,
+        ):
+            opened.return_value.__enter__.return_value = self.template
+            dialog.return_value.result = NccSettings(pad_input=True, display="ncc")
+            result = NormalizedCrossCorrelationTool().run(mock.Mock(), _document(self.scene))
+        self.assertIsNotNone(result.image)
+        self.assertEqual(result.image.size, self.scene.size)
+        self.assertEqual(result.details["Peak location (x, y)"], "(68, 64)")
+
+    def test_ncc_tool_popup_keeps_working_image(self) -> None:
+        with (
+            mock.patch(f"{NCC}.filedialog.askopenfilename", return_value="template.png"),
+            mock.patch(f"{NCC}.Image.open") as opened,
+            mock.patch(f"{NCC}.NccDialog") as dialog,
+            mock.patch(f"{NCC}.show_figure") as show,
+        ):
+            opened.return_value.__enter__.return_value = self.template
+            dialog.return_value.result = NccSettings(pad_input=True, display="popup")
+            result = NormalizedCrossCorrelationTool().run(mock.Mock(), _document(self.scene))
+        show.assert_called_once()
+        self.assertIsNone(result.image)
+
+    def test_config_tool_applies_rotation_threshold_and_superimposition(self) -> None:
+        settings = TemplateMatchingSettings(angle=0.0, threshold=0.95, pad_input=True, display="red_edges")
+        with (
+            mock.patch(f"{TMPL}.filedialog.askopenfilename", return_value="template.png"),
+            mock.patch(f"{TMPL}.Image.open") as opened,
+            mock.patch(f"{TMPL}.TemplateMatchingDialog") as dialog,
+        ):
+            opened.return_value.__enter__.return_value = self.template
+            dialog.return_value.result = settings
+            result = TemplateMatchingConfigTool().run(mock.Mock(), _document(self.scene))
+        self.assertEqual(result.image.mode, "RGB")
+        self.assertEqual(result.details["Matched pixels"], 1)
+        self.assertEqual(tuple(np.asarray(result.image)[64, 68]), (255, 0, 0))
+
+    def test_config_tool_popup_opens_4_panel_figure(self) -> None:
+        settings = TemplateMatchingSettings(angle=10.0, threshold=0.5, pad_input=True, display="popup")
+        with (
+            mock.patch(f"{TMPL}.filedialog.askopenfilename", return_value="template.png"),
+            mock.patch(f"{TMPL}.Image.open") as opened,
+            mock.patch(f"{TMPL}.TemplateMatchingDialog") as dialog,
+            mock.patch(f"{TMPL}.show_figure") as show,
+        ):
+            opened.return_value.__enter__.return_value = self.template
+            dialog.return_value.result = settings
+            result = TemplateMatchingConfigTool().run(mock.Mock(), _document(self.scene))
+        show.assert_called_once()
+        self.assertIsNone(result.image)
+        self.assertEqual(result.details["Rotation angle"], "10°")
 
 
 if __name__ == "__main__":
