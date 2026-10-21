@@ -20,6 +20,8 @@ from .hog import HogTool
 from .hog_detection import HogDetectionTool
 from .ncc import NormalizedCrossCorrelationTool
 from .template_matching import TemplateMatchingConfigTool
+from .feature_matching import FeatureMatchingTool
+from .image_lookup import ImageLookupTool
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -45,6 +47,8 @@ def build_tool_registry() -> ToolRegistry:
             TemplateMatchingConfigTool(),
             HogTool(),
             HogDetectionTool(),
+            FeatureMatchingTool(),
+            ImageLookupTool(),
         ]
     )
 
