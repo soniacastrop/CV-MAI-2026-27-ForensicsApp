@@ -20,6 +20,8 @@ from .hog import HogTool
 from .hog_detection import HogDetectionTool
 from .ncc import NormalizedCrossCorrelationTool
 from .template_matching import TemplateMatchingConfigTool
+from .corner_detection import CornerDetectionTool
+from .descriptors import DescriptorExtractorTool
 from .feature_matching import FeatureMatchingTool
 from .image_lookup import ImageLookupTool
 
@@ -47,6 +49,8 @@ def build_tool_registry() -> ToolRegistry:
             TemplateMatchingConfigTool(),
             HogTool(),
             HogDetectionTool(),
+            CornerDetectionTool(),
+            DescriptorExtractorTool(),
             FeatureMatchingTool(),
             ImageLookupTool(),
         ]
