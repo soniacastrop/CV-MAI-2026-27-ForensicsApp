@@ -16,6 +16,7 @@ from skimage.transform import AffineTransform
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
+from .dialog_fields import read_number, spin_row
 from .modes import split_alpha
 
 IMAGE_TYPES = [
@@ -226,24 +227,24 @@ class MatchingDialog(simpledialog.Dialog):
         row += 1
         self.orb_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
         self.sift_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        first = self._spin(self.orb_frame, 0, "Number of keypoints:", self.n_keypoints, N_KEYPOINTS_RANGE, 50)
-        self._spin(self.orb_frame, 1, "FAST threshold:", self.fast_threshold, FAST_THRESHOLD_RANGE, 0.01)
-        self._spin(self.sift_frame, 0, "Number of octaves:", self.n_octaves, N_OCTAVES_RANGE, 1)
-        self._spin(self.sift_frame, 1, "Scales per octave:", self.n_scales, N_SCALES_RANGE, 1)
-        self._spin(self.sift_frame, 2, "Sigma min:", self.sigma_min, SIGMA_RANGE, 0.1)
+        first = spin_row(self.orb_frame, 0, "Number of keypoints:", self.n_keypoints, N_KEYPOINTS_RANGE, 50)
+        spin_row(self.orb_frame, 1, "FAST threshold:", self.fast_threshold, FAST_THRESHOLD_RANGE, 0.01)
+        spin_row(self.sift_frame, 0, "Number of octaves:", self.n_octaves, N_OCTAVES_RANGE, 1)
+        spin_row(self.sift_frame, 1, "Scales per octave:", self.n_scales, N_SCALES_RANGE, 1)
+        spin_row(self.sift_frame, 2, "Sigma min:", self.sigma_min, SIGMA_RANGE, 0.1)
 
         row += 1
         common = ttk.LabelFrame(master, text="Matching")
         common.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        self._spin(common, 0, "Downscale to max side (px):", self.max_side, MAX_SIDE_RANGE, 100)
+        spin_row(common, 0, "Downscale to max side (px):", self.max_side, MAX_SIDE_RANGE, 100)
         ttk.Checkbutton(common, text="Cross check (mutual nearest neighbours)", variable=self.cross_check).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=6
         )
-        self._spin(common, 2, "Max ratio (Lowe's test, 0–1]:", self.max_ratio, RATIO_RANGE, 0.05)
+        spin_row(common, 2, "Max ratio (Lowe's test, 0–1]:", self.max_ratio, RATIO_RANGE, 0.05)
         ttk.Checkbutton(
             common, text="Keep only RANSAC inliers (affine geometric check)", variable=self.use_ransac
         ).grid(row=3, column=0, columnspan=2, sticky="w", padx=6)
-        self._spin(common, 4, "RANSAC residual threshold (px):", self.residual, RESIDUAL_RANGE, 0.5)
+        spin_row(common, 4, "RANSAC residual threshold (px):", self.residual, RESIDUAL_RANGE, 0.5)
         ttk.Checkbutton(common, text="Draw unmatched keypoints too", variable=self.show_keypoints).grid(
             row=5, column=0, columnspan=2, sticky="w", padx=6
         )
@@ -255,47 +256,29 @@ class MatchingDialog(simpledialog.Dialog):
     def extra_body(self, master: tk.Frame, row: int) -> None:
         """Hook for subclasses to add rows below the matching options."""
 
-    @staticmethod
-    def _spin(
-        master: tk.Misc, row: int, text: str, variable: tk.StringVar, bounds: tuple[float, float], step: float
-    ) -> ttk.Spinbox:
-        ttk.Label(master, text=text).grid(row=row, column=0, sticky="w", padx=6)
-        box = ttk.Spinbox(master, from_=bounds[0], to=bounds[1], increment=step, textvariable=variable, width=8)
-        box.grid(row=row, column=1, sticky="w", padx=6, pady=2)
-        return box
-
     def _toggle(self) -> None:
         """Only the chosen descriptor's parameters are shown."""
         orb = self.descriptor.get() == "orb"
         (self.sift_frame if orb else self.orb_frame).grid_remove()
         (self.orb_frame if orb else self.sift_frame).grid()
 
-    def _number(self, variable: tk.StringVar, name: str, bounds: tuple[float, float], kind: type = float) -> Any:
-        try:
-            value = kind(variable.get())
-        except ValueError:
-            raise ValueError(f"{name} must be {'an integer' if kind is int else 'a number'}.") from None
-        if not bounds[0] <= value <= bounds[1]:
-            raise ValueError(f"{name} must be between {bounds[0]:g} and {bounds[1]:g}.")
-        return value
-
     def read_settings(self) -> MatchingSettings:
         """Parse the widgets; raises ``ValueError`` with a user-facing message."""
-        max_ratio = self._number(self.max_ratio, "Max ratio", RATIO_RANGE)
+        max_ratio = read_number(self.max_ratio, "Max ratio", RATIO_RANGE)
         if max_ratio == 0:
             raise ValueError("Max ratio must be greater than 0.")
         return MatchingSettings(
             descriptor=self.descriptor.get(),
-            n_keypoints=self._number(self.n_keypoints, "Number of keypoints", N_KEYPOINTS_RANGE, int),
-            fast_threshold=self._number(self.fast_threshold, "FAST threshold", FAST_THRESHOLD_RANGE),
-            n_octaves=self._number(self.n_octaves, "Number of octaves", N_OCTAVES_RANGE, int),
-            n_scales=self._number(self.n_scales, "Scales per octave", N_SCALES_RANGE, int),
-            sigma_min=self._number(self.sigma_min, "Sigma min", SIGMA_RANGE),
-            max_side=self._number(self.max_side, "Max side", MAX_SIDE_RANGE, int),
+            n_keypoints=read_number(self.n_keypoints, "Number of keypoints", N_KEYPOINTS_RANGE, int),
+            fast_threshold=read_number(self.fast_threshold, "FAST threshold", FAST_THRESHOLD_RANGE),
+            n_octaves=read_number(self.n_octaves, "Number of octaves", N_OCTAVES_RANGE, int),
+            n_scales=read_number(self.n_scales, "Scales per octave", N_SCALES_RANGE, int),
+            sigma_min=read_number(self.sigma_min, "Sigma min", SIGMA_RANGE),
+            max_side=read_number(self.max_side, "Max side", MAX_SIDE_RANGE, int),
             cross_check=self.cross_check.get(),
             max_ratio=max_ratio,
             use_ransac=self.use_ransac.get(),
-            residual_threshold=self._number(self.residual, "RANSAC residual threshold", RESIDUAL_RANGE),
+            residual_threshold=read_number(self.residual, "RANSAC residual threshold", RESIDUAL_RANGE),
             show_keypoints=self.show_keypoints.get(),
         )
 

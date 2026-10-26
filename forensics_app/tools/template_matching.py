@@ -11,6 +11,8 @@ from typing import Any
 from matplotlib.figure import Figure
 import numpy as np
 from PIL import Image
+from scipy.ndimage import binary_dilation
+from skimage.morphology import disk
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
@@ -20,12 +22,15 @@ from .ncc import TEMPLATE_TYPES, compute_ncc, ncc_to_image, rotate_template, to_
 
 ANGLE_RANGE = (-360.0, 360.0)
 THRESHOLD_RANGE = (-1.0, 1.0)
+DIM_FACTOR = 0.4  # brightness kept by the image under the red match dots
+DOT_RADIUS = 2  # a match is only a few pixels: grow it into a visible dot
 
 # Task 4.2 display modes (includes Set 3 superimpositions + NCC map + 4-panel popup)
 CONFIG_DISPLAYS = {
+    "red_dots": "Red dots on the dimmed grayscale image (as in slide)",
     "red_edges": "Red match pixels on the image",
     "red_overlay": "Transparent red overlay on matches",
-    "darken": "Darken everything except matches (as in slide)",
+    "darken": "Darken everything except matches",
     "contours": "Matches as contours (one colour per match region)",
     "edge_map": "Binary threshold mask (white matches on black)",
     "ncc": "Normalized cross-correlation image",
@@ -38,7 +43,7 @@ class TemplateMatchingSettings:
     angle: float = 0.0
     threshold: float = 0.7
     pad_input: bool = True
-    display: str = "darken"
+    display: str = "red_dots"
 
 
 def threshold_ncc(corr: np.ndarray, threshold: float) -> np.ndarray:
@@ -52,7 +57,7 @@ def render_matches(image: Image.Image, corr: np.ndarray, threshold: float, displ
     """Render the template matching result using ``ncc`` or one of the Set 3 superimposition styles."""
     if display == "ncc":
         return ncc_to_image(corr)
-    if display not in CANNY_DISPLAYS:
+    if display not in CANNY_DISPLAYS and display != "red_dots":
         raise ValueError(f"Display must be one of {', '.join(CONFIG_DISPLAYS)}.")
     matches = threshold_ncc(corr, threshold)
     if matches.shape != (image.height, image.width):
@@ -62,7 +67,17 @@ def render_matches(image: Image.Image, corr: np.ndarray, threshold: float, displ
         left = (image.width - matches.shape[1]) // 2
         padded[top : top + matches.shape[0], left : left + matches.shape[1]] = matches
         matches = padded
+    if display == "red_dots":
+        return render_red_dots(image, matches)
     return render_edges(image, matches, display)
+
+
+def render_red_dots(image: Image.Image, matches: np.ndarray) -> Image.Image:
+    """The slide's "Thresholded image": the image in dimmed gray with every match as a red dot."""
+    gray = to_gray_float(image) * DIM_FACTOR
+    out = np.repeat(gray[..., None], 3, axis=2)
+    out[binary_dilation(matches, disk(DOT_RADIUS))] = (1.0, 0.0, 0.0)
+    return Image.fromarray(np.round(out * 255).astype(np.uint8), mode="RGB")
 
 
 def config_comparison_figure(
@@ -81,7 +96,7 @@ def config_comparison_figure(
     ax[1].set_title(title_tmpl)
     ax[2].imshow(corr, cmap="gray")
     ax[2].set_title("Normalized cross-corr image")
-    overlay_style = settings.display if settings.display in CANNY_DISPLAYS else "darken"
+    overlay_style = settings.display if settings.display in CANNY_DISPLAYS else "red_dots"
     thresholded = render_matches(image, corr, settings.threshold, overlay_style)
     if thresholded.mode == "L":
         ax[3].imshow(np.asarray(thresholded), cmap="gray")
@@ -103,7 +118,7 @@ class TemplateMatchingDialog(simpledialog.Dialog):
         self.angle = tk.StringVar(value="0.0")
         self.threshold = tk.StringVar(value="0.7")
         self.pad_input = tk.BooleanVar(value=True)
-        self.display = tk.StringVar(value="darken")
+        self.display = tk.StringVar(value="red_dots")
 
         info = f"Template size: {self.template.width} × {self.template.height} px"
         if self.max_corr is not None:
@@ -266,20 +281,7 @@ __all__ = [
     "TemplateMatchingSettings",
     "config_comparison_figure",
     "render_matches",
+    "render_red_dots",
     "rotate_template",
     "threshold_ncc",
 ]
-
-__all__ = [
-    "ANGLE_RANGE",
-    "CONFIG_DISPLAYS",
-    "THRESHOLD_RANGE",
-    "TemplateMatchingConfigTool",
-    "TemplateMatchingDialog",
-    "TemplateMatchingSettings",
-    "config_comparison_figure",
-    "render_matches",
-    "rotate_template",
-    "threshold_ncc",
-]
-

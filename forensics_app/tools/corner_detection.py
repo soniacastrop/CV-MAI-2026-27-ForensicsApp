@@ -14,6 +14,7 @@ from skimage.feature import corner_fast, corner_harris, corner_peaks
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
+from .dialog_fields import read_number, spin_row
 from .hog import show_figure
 from .modes import split_alpha
 
@@ -218,18 +219,25 @@ class CornerDetectionDialog(simpledialog.Dialog):
         row += 1
         self.fast_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
         self.harris_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        self._spin(self.fast_frame, 0, "Consecutive pixels (n):", self.fast_n, FAST_N_RANGE, 1)
-        self._spin(self.fast_frame, 1, "FAST intensity threshold:", self.fast_threshold, FAST_THRESHOLD_RANGE, 0.01)
-        self._spin(self.harris_frame, 0, "Sensitivity factor (k):", self.harris_k, HARRIS_K_RANGE, 0.01)
-        self._spin(self.harris_frame, 1, "Gaussian sigma:", self.harris_sigma, HARRIS_SIGMA_RANGE, 0.1)
+        spin_row(self.fast_frame, 0, "Consecutive pixels (n):", self.fast_n, FAST_N_RANGE, 1)
+        spin_row(self.fast_frame, 1, "FAST intensity threshold:", self.fast_threshold, FAST_THRESHOLD_RANGE, 0.01)
+        # FAST scores are close together (weakest ≈ 20% of strongest), so threshold_rel only bites above ~0.3
+        ttk.Label(
+            self.fast_frame,
+            text="Raise this for fewer corners: FAST scores are close together, so the\n"
+            "peak threshold below only removes corners above about 0.3.",
+            foreground="gray",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 4))
+        spin_row(self.harris_frame, 0, "Sensitivity factor (k):", self.harris_k, HARRIS_K_RANGE, 0.01)
+        spin_row(self.harris_frame, 1, "Gaussian sigma:", self.harris_sigma, HARRIS_SIGMA_RANGE, 0.1)
 
         row += 1
         peaks_frame = ttk.LabelFrame(master, text="Peak filtering (corner_peaks)")
         peaks_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        first = self._spin(
+        first = spin_row(
             peaks_frame, 0, "Peak relative threshold (0–1):", self.threshold_rel, THRESHOLD_REL_RANGE, 0.05
         )
-        self._spin(peaks_frame, 1, "Minimum distance between peaks (px):", self.min_distance, MIN_DISTANCE_RANGE, 1)
+        spin_row(peaks_frame, 1, "Minimum distance between peaks (px):", self.min_distance, MIN_DISTANCE_RANGE, 1)
 
         row += 1
         ttk.Label(master, text="Show as:").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -242,44 +250,20 @@ class CornerDetectionDialog(simpledialog.Dialog):
         self._toggle()
         return first
 
-    @staticmethod
-    def _spin(
-        master: tk.Misc,
-        row: int,
-        text: str,
-        variable: tk.StringVar,
-        bounds: tuple[float, float],
-        step: float,
-    ) -> ttk.Spinbox:
-        ttk.Label(master, text=text).grid(row=row, column=0, sticky="w", padx=6)
-        box = ttk.Spinbox(master, from_=bounds[0], to=bounds[1], increment=step, textvariable=variable, width=8)
-        box.grid(row=row, column=1, sticky="w", padx=6, pady=2)
-        return box
-
     def _toggle(self) -> None:
         is_fast = self.detector.get() == "fast"
         (self.harris_frame if is_fast else self.fast_frame).grid_remove()
         (self.fast_frame if is_fast else self.harris_frame).grid()
 
-    @staticmethod
-    def _number(variable: tk.StringVar, name: str, bounds: tuple[float, float], kind: type = float) -> Any:
-        try:
-            value = kind(variable.get())
-        except ValueError:
-            raise ValueError(f"{name} must be {'an integer' if kind is int else 'a number'}.") from None
-        if not bounds[0] <= value <= bounds[1]:
-            raise ValueError(f"{name} must be between {bounds[0]:g} and {bounds[1]:g}.")
-        return value
-
     def read_settings(self) -> CornerDetectionSettings:
         return CornerDetectionSettings(
             detector=self.detector.get(),
-            threshold_rel=self._number(self.threshold_rel, "Peak relative threshold", THRESHOLD_REL_RANGE),
-            min_distance=self._number(self.min_distance, "Minimum peak distance", MIN_DISTANCE_RANGE, int),
-            fast_n=self._number(self.fast_n, "FAST n", FAST_N_RANGE, int),
-            fast_threshold=self._number(self.fast_threshold, "FAST threshold", FAST_THRESHOLD_RANGE),
-            harris_k=self._number(self.harris_k, "Harris k", HARRIS_K_RANGE),
-            harris_sigma=self._number(self.harris_sigma, "Harris sigma", HARRIS_SIGMA_RANGE),
+            threshold_rel=read_number(self.threshold_rel, "Peak relative threshold", THRESHOLD_REL_RANGE),
+            min_distance=read_number(self.min_distance, "Minimum peak distance", MIN_DISTANCE_RANGE, int),
+            fast_n=read_number(self.fast_n, "FAST n", FAST_N_RANGE, int),
+            fast_threshold=read_number(self.fast_threshold, "FAST threshold", FAST_THRESHOLD_RANGE),
+            harris_k=read_number(self.harris_k, "Harris k", HARRIS_K_RANGE),
+            harris_sigma=read_number(self.harris_sigma, "Harris sigma", HARRIS_SIGMA_RANGE),
             display=self.display.get(),
         )
 

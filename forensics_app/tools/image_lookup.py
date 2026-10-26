@@ -37,8 +37,9 @@ MAX_RANKED = 10  # rows of the ranking shown in the details panel
 
 @dataclass(frozen=True)
 class LookupSettings:
-    # On the Set 5 images SIFT ranked by plain match count found the right image for every reference;
-    # ORB, the affine RANSAC check and the normalized score each picked wrong images for some.
+    # On the Set 5 images SIFT ranked by plain match count found the right image for 18 of 19 references.
+    # Adding the affine RANSAC check also gave 18/19 at twice the time; ORB (12/19) and the normalized
+    # score (13/19) did worse.
     matching: MatchingSettings = MatchingSettings(descriptor="sift")
     score: str = "matches"
     recursive: bool = True

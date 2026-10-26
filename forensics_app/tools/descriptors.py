@@ -14,6 +14,7 @@ from PIL import Image
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
 from .corner_detection import draw_keypoints_on_image
+from .dialog_fields import read_number, spin_row
 from .feature_matching import (
     DESCRIPTORS,
     FAST_THRESHOLD_RANGE,
@@ -36,31 +37,15 @@ DESCRIPTOR_DISPLAYS = {
 
 
 @dataclass(frozen=True)
-class DescriptorSettings:
-    descriptor: str = "orb"
-    n_keypoints: int = 200  # ORB
-    fast_threshold: float = 0.08  # ORB
-    n_octaves: int = 5  # SIFT
-    n_scales: int = 3  # SIFT
-    sigma_min: float = 1.6  # SIFT
-    max_side: int = 600
-    display: str = "keypoints_gray"
+class DescriptorSettings(MatchingSettings):
+    """The extractor parameters of Set 5.3's matching (its matching options are unused) plus the display."""
 
-    def to_matching_settings(self) -> MatchingSettings:
-        return MatchingSettings(
-            descriptor=self.descriptor,
-            n_keypoints=self.n_keypoints,
-            fast_threshold=self.fast_threshold,
-            n_octaves=self.n_octaves,
-            n_scales=self.n_scales,
-            sigma_min=self.sigma_min,
-            max_side=self.max_side,
-        )
+    display: str = "keypoints_gray"
 
 
 def extract_descriptors(image: Image.Image, settings: DescriptorSettings) -> Features:
     """Detect keypoints and extract ORB or SIFT descriptors using ``skimage.feature``."""
-    return extract_features(image, settings.to_matching_settings())
+    return extract_features(image, settings)
 
 
 def render_keypoints(image: Image.Image, features: Features, display: str) -> Image.Image:
@@ -132,16 +117,16 @@ class DescriptorDialog(simpledialog.Dialog):
         row += 1
         self.orb_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
         self.sift_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        first = self._spin(self.orb_frame, 0, "Number of keypoints (n_keypoints):", self.n_keypoints, N_KEYPOINTS_RANGE, 50)
-        self._spin(self.orb_frame, 1, "FAST threshold:", self.fast_threshold, FAST_THRESHOLD_RANGE, 0.01)
-        self._spin(self.sift_frame, 0, "Number of octaves (n_octaves):", self.n_octaves, N_OCTAVES_RANGE, 1)
-        self._spin(self.sift_frame, 1, "Scales per octave (n_scales):", self.n_scales, N_SCALES_RANGE, 1)
-        self._spin(self.sift_frame, 2, "Sigma min (sigma_min):", self.sigma_min, SIGMA_RANGE, 0.1)
+        first = spin_row(self.orb_frame, 0, "Number of keypoints (n_keypoints):", self.n_keypoints, N_KEYPOINTS_RANGE, 50)
+        spin_row(self.orb_frame, 1, "FAST threshold:", self.fast_threshold, FAST_THRESHOLD_RANGE, 0.01)
+        spin_row(self.sift_frame, 0, "Number of octaves (n_octaves):", self.n_octaves, N_OCTAVES_RANGE, 1)
+        spin_row(self.sift_frame, 1, "Scales per octave (n_scales):", self.n_scales, N_SCALES_RANGE, 1)
+        spin_row(self.sift_frame, 2, "Sigma min (sigma_min):", self.sigma_min, SIGMA_RANGE, 0.1)
 
         row += 1
         prep_frame = ttk.LabelFrame(master, text="Preprocessing")
         prep_frame.grid(row=row, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        self._spin(prep_frame, 0, "Downscale to max side (px):", self.max_side, MAX_SIDE_RANGE, 100)
+        spin_row(prep_frame, 0, "Downscale to max side (px):", self.max_side, MAX_SIDE_RANGE, 100)
 
         row += 1
         ttk.Label(master, text="Show as:").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -154,44 +139,20 @@ class DescriptorDialog(simpledialog.Dialog):
         self._toggle()
         return first
 
-    @staticmethod
-    def _spin(
-        master: tk.Misc,
-        row: int,
-        text: str,
-        variable: tk.StringVar,
-        bounds: tuple[float, float],
-        step: float,
-    ) -> ttk.Spinbox:
-        ttk.Label(master, text=text).grid(row=row, column=0, sticky="w", padx=6)
-        box = ttk.Spinbox(master, from_=bounds[0], to=bounds[1], increment=step, textvariable=variable, width=8)
-        box.grid(row=row, column=1, sticky="w", padx=6, pady=2)
-        return box
-
     def _toggle(self) -> None:
         orb = self.descriptor.get() == "orb"
         (self.sift_frame if orb else self.orb_frame).grid_remove()
         (self.orb_frame if orb else self.sift_frame).grid()
 
-    @staticmethod
-    def _number(variable: tk.StringVar, name: str, bounds: tuple[float, float], kind: type = float) -> Any:
-        try:
-            value = kind(variable.get())
-        except ValueError:
-            raise ValueError(f"{name} must be {'an integer' if kind is int else 'a number'}.") from None
-        if not bounds[0] <= value <= bounds[1]:
-            raise ValueError(f"{name} must be between {bounds[0]:g} and {bounds[1]:g}.")
-        return value
-
     def read_settings(self) -> DescriptorSettings:
         return DescriptorSettings(
             descriptor=self.descriptor.get(),
-            n_keypoints=self._number(self.n_keypoints, "Number of keypoints", N_KEYPOINTS_RANGE, int),
-            fast_threshold=self._number(self.fast_threshold, "FAST threshold", FAST_THRESHOLD_RANGE),
-            n_octaves=self._number(self.n_octaves, "Number of octaves", N_OCTAVES_RANGE, int),
-            n_scales=self._number(self.n_scales, "Scales per octave", N_SCALES_RANGE, int),
-            sigma_min=self._number(self.sigma_min, "Sigma min", SIGMA_RANGE),
-            max_side=self._number(self.max_side, "Max side", MAX_SIDE_RANGE, int),
+            n_keypoints=read_number(self.n_keypoints, "Number of keypoints", N_KEYPOINTS_RANGE, int),
+            fast_threshold=read_number(self.fast_threshold, "FAST threshold", FAST_THRESHOLD_RANGE),
+            n_octaves=read_number(self.n_octaves, "Number of octaves", N_OCTAVES_RANGE, int),
+            n_scales=read_number(self.n_scales, "Scales per octave", N_SCALES_RANGE, int),
+            sigma_min=read_number(self.sigma_min, "Sigma min", SIGMA_RANGE),
+            max_side=read_number(self.max_side, "Max side", MAX_SIDE_RANGE, int),
             display=self.display.get(),
         )
 

@@ -28,6 +28,7 @@ from forensics_app.tools.descriptors import (
     extract_descriptors,
     render_keypoints,
 )
+from forensics_app.tools.dialog_fields import read_number
 from forensics_app.tools.feature_matching import (
     FeatureMatchingTool,
     MatchingSettings,
@@ -184,6 +185,13 @@ class CornerDetectionTests(unittest.TestCase):
 class DescriptorExtractorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.image = _pair()[1]  # RGB image
+
+    def test_same_keypoints_as_matching(self) -> None:
+        settings = DescriptorSettings(descriptor="orb", n_keypoints=40)
+        matching = MatchingSettings(descriptor="orb", n_keypoints=40)
+        np.testing.assert_array_equal(
+            extract_descriptors(self.image, settings).keypoints, extract_features(self.image, matching).keypoints
+        )
 
     def test_orb_and_sift_configurable_extraction(self) -> None:
         orb_settings = DescriptorSettings(descriptor="orb", n_keypoints=40, fast_threshold=0.1)
@@ -427,6 +435,30 @@ class LookupTests(unittest.TestCase):
         self.assertIn("No images", result.message)
         with mock.patch(f"{LOOKUP}.filedialog.askdirectory", return_value=""):
             self.assertIsNone(ImageLookupTool().run(_parent(), _document(_pair()[0])))
+
+
+class ReadNumberTests(unittest.TestCase):
+    def test_parses_within_bounds(self) -> None:
+        self.assertEqual(read_number(_Var("7"), "Count", (1, 10), int), 7)
+        self.assertEqual(read_number(_Var("0.5"), "Ratio", (0.0, 1.0)), 0.5)
+
+    def test_rejects_bad_text_and_out_of_range(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Count must be an integer"):
+            read_number(_Var("1.5"), "Count", (1, 10), int)
+        with self.assertRaisesRegex(ValueError, "Ratio must be a number"):
+            read_number(_Var("abc"), "Ratio", (0.0, 1.0))
+        with self.assertRaisesRegex(ValueError, "between 1 and 10"):
+            read_number(_Var("11"), "Count", (1, 10), int)
+
+
+class _Var:
+    """Stand-in for a ``tk.StringVar`` (no Tk root needed)."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def get(self) -> str:
+        return self.value
 
 
 if __name__ == "__main__":

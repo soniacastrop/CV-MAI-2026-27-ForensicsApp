@@ -43,6 +43,8 @@ from forensics_app.tools.ncc import (
 )
 from forensics_app.tools.template_matching import (
     CONFIG_DISPLAYS,
+    DIM_FACTOR,
+    DOT_RADIUS,
     TemplateMatchingConfigTool,
     TemplateMatchingSettings,
     config_comparison_figure,
@@ -512,6 +514,20 @@ class TemplateMatchingFunctionTests(unittest.TestCase):
             self.assertEqual(rendered.size, self.scene.size)
         with self.assertRaises(ValueError):
             render_matches(self.scene, corr, 0.95, "unknown_style")
+
+    def test_red_dots_marks_the_match_on_the_dimmed_image(self) -> None:
+        corr, _ = compute_ncc(self.scene, self.template, pad_input=True)
+        out = np.asarray(render_matches(self.scene, corr, 0.95, "red_dots"))
+        self.assertEqual(out.shape, (120, 140, 3))
+        # The single matched pixel (the template centre) grows into a red dot of radius DOT_RADIUS
+        red = np.all(out == (255, 0, 0), axis=2)
+        rows, cols = np.nonzero(red)
+        self.assertEqual((rows.min(), rows.max()), (64 - DOT_RADIUS, 64 + DOT_RADIUS))
+        self.assertEqual((cols.min(), cols.max()), (68 - DOT_RADIUS, 68 + DOT_RADIUS))
+        # Everywhere else the image is gray and dimmed
+        rest = out[~red]
+        self.assertTrue(np.all(rest[:, 0] == rest[:, 1]) and np.all(rest[:, 1] == rest[:, 2]))
+        self.assertLessEqual(int(rest.max()), round(255 * DIM_FACTOR))
 
     def test_ncc_to_image_scales_full_range(self) -> None:
         corr, _ = compute_ncc(self.scene, self.template, pad_input=True)
