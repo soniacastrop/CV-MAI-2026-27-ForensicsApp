@@ -33,7 +33,9 @@ N_KEYPOINTS_RANGE = (1, 5000)
 FAST_THRESHOLD_RANGE = (0.0, 1.0)
 N_OCTAVES_RANGE = (1, 10)
 N_SCALES_RANGE = (1, 10)
-SIGMA_RANGE = (0.1, 10.0)
+# SIFT needs sigma_min >= upsampling (2) × sigma_in (0.5) = 1: the first level cannot be sharper than the
+# doubled input. Below 1 skimage raises "math domain error", which would show up as 0 keypoints.
+SIGMA_RANGE = (1.0, 10.0)
 MAX_SIDE_RANGE = (64, 4000)
 RATIO_RANGE = (0.0, 1.0)  # max_ratio must be in (0, 1]
 RESIDUAL_RANGE = (0.1, 50.0)

@@ -205,7 +205,10 @@ class MainWindow:
             self.status.set(f"Cancelled {tool.title}.")
             return
         if result.image is not None:
-            self.document.apply(result.image)
+            if self.document.is_loaded:
+                self.document.apply(result.image)
+            else:  # tools that need no image (webcam, eigenfaces) start a new document
+                self.document.open_image(result.image)
         self._show_details(result.details)
         self.status.set(result.message)
         self._refresh()

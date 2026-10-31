@@ -112,6 +112,17 @@ class MainWindowTests(unittest.TestCase):
         showinfo.assert_called_once()
         self.assertFalse(window.document.is_loaded)
 
+    def test_tool_without_image_opens_its_result_as_a_new_document(self) -> None:
+        class _NoImageTool(_InvertTool):
+            requires_image = False
+
+        window = MainWindow(self.root, ToolRegistry([_NoImageTool()]))
+        window.run_tool(_NoImageTool())
+        self.assertTrue(window.document.is_loaded)
+        self.assertIsNone(window.document.path)
+        self.assertFalse(window.document.can_undo)
+        self.assertEqual(window.document.original.getpixel((0, 0)), 255)
+
 
 if __name__ == "__main__":
     unittest.main()

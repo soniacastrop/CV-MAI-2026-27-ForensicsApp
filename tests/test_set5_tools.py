@@ -30,6 +30,7 @@ from forensics_app.tools.descriptors import (
 )
 from forensics_app.tools.dialog_fields import read_number
 from forensics_app.tools.feature_matching import (
+    SIGMA_RANGE,
     FeatureMatchingTool,
     MatchingSettings,
     draw_matches,
@@ -185,6 +186,12 @@ class CornerDetectionTests(unittest.TestCase):
 class DescriptorExtractorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.image = _pair()[1]  # RGB image
+
+    def test_lowest_allowed_sigma_min_still_finds_keypoints(self) -> None:
+        settings = DescriptorSettings(descriptor="sift", sigma_min=SIGMA_RANGE[0])
+        self.assertGreater(len(extract_descriptors(self.image, settings).keypoints), 0)
+        with self.assertRaisesRegex(ValueError, "between 1 and 10"):
+            read_number(_Var("0.8"), "Sigma min", SIGMA_RANGE)
 
     def test_same_keypoints_as_matching(self) -> None:
         settings = DescriptorSettings(descriptor="orb", n_keypoints=40)

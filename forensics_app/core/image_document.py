@@ -43,9 +43,13 @@ class ImageDocument:
         source = Path(path)
         with Image.open(source) as image:
             loaded = image.copy()
-        self.path = source
-        self.original = loaded.copy()
-        self.current = loaded
+        self.open_image(loaded, source)
+
+    def open_image(self, image: Image.Image, path: Path | None = None) -> None:
+        """Start a new document from an in-memory image (e.g. a webcam capture)."""
+        self.path = path
+        self.original = image.copy()
+        self.current = image.copy()
         self._undo.clear()
         self._redo.clear()
 
