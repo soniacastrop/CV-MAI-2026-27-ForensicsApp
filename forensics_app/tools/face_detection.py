@@ -39,7 +39,7 @@ SOURCES = {
     "webcam": "Webcam stream (live)",
 }
 OUTPUTS = {
-    "side": "Original and detection side by side (as in the slide)",
+    "side": "Original and detection side by side",
     "annotate": "Boxes, scores and the 5 landmarks",
     "crop": "Crop of the most confident face (e.g. to feed Face recognition)",
 }

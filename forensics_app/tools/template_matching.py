@@ -27,7 +27,7 @@ DOT_RADIUS = 2  # a match is only a few pixels: grow it into a visible dot
 
 # Task 4.2 display modes (includes Set 3 superimpositions + NCC map + 4-panel popup)
 CONFIG_DISPLAYS = {
-    "red_dots": "Red dots on the dimmed grayscale image (as in slide)",
+    "red_dots": "Red dots on the dimmed grayscale image",
     "red_edges": "Red match pixels on the image",
     "red_overlay": "Transparent red overlay on matches",
     "darken": "Darken everything except matches",

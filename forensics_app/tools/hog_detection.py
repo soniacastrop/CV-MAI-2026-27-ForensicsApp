@@ -29,7 +29,7 @@ WINDOW_RANGE = (4, 4096)
 # Search variants (key -> (label, explanation))
 VARIANTS = {
     "exact": (
-        "Exact: HOG of every window (as in the slides)",
+        "Exact: HOG of every window",
         "Crops each window and runs hog() on it. Any step in pixels; slow on big images.",
     ),
     "fast": (

@@ -26,7 +26,7 @@ CORNER_DETECTORS = {
 
 # Display key -> label in the dialog
 CORNER_DISPLAYS = {
-    "peaks_gray": "Corner peaks (red circles) on grayscale image (as in slide)",
+    "peaks_gray": "Corner peaks (red circles) on grayscale image",
     "peaks_rgb": "Corner peaks (red circles) on original colour image",
     "response": "Corner response map (corner_fast / corner_harris)",
     "popup": "Side-by-side comparison: response map & corner peaks (popup)",

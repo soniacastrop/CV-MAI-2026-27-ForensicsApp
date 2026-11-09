@@ -30,7 +30,7 @@ from .feature_matching import (
 from .hog import show_figure
 
 DESCRIPTOR_DISPLAYS = {
-    "keypoints_gray": "Keypoints (red circles) on grayscale image (as in slide)",
+    "keypoints_gray": "Keypoints (red circles) on grayscale image",
     "keypoints_rgb": "Keypoints (red circles) on original colour image",
     "popup": "Keypoints & descriptor matrix visualization (popup)",
 }

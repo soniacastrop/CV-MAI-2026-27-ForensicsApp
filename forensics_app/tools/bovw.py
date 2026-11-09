@@ -80,7 +80,11 @@ CLUSTERS_OVERRIDE_RANGE = (0, 2000)  # 0 = use words_per_class * num_classes
 PATCH_SIZE = 28  # side length (px) of each visual word thumbnail (vw 0 .. vw K-1)
 MAX_DISPLAY_WORDS = 100
 MAX_TEST_HISTOGRAMS = 6
-MAX_CONNECTED_KEYPOINTS = 150  # lines drawn per image in the 7.2 figure
+MAX_CONNECTED_KEYPOINTS = 150  # grey (not highlighted) keypoints drawn per image in the 7.2 figure
+HIGHLIGHT_WORDS_DEFAULT = 5  # 7.2: the most frequent words of each image are coloured, the rest grey
+HIGHLIGHT_WORDS_RANGE = (0, 10)
+HIGHLIGHT_PALETTE = [colormaps["tab10"](i) for i in range(10)]
+OTHER_WORDS_COLOUR = "lightgray"
 N_KEYPOINT_SAMPLES = 10  # training images with keypoints shown in 7.1 (2 rows of 5, as on the slide)
 MAX_SAMPLE_KEYPOINTS = 60  # red dots drawn per sample image in 7.1
 MODEL_SEARCH_DEPTH = 4
@@ -95,12 +99,12 @@ CLASSIFIERS = {
 }
 
 HISTOGRAM_MODES = {
-    "test_set": "Test images from the dataset (one per class, as in slide 7.2)",
+    "test_set": "Test images from the dataset (one per class)",
     "current": "Current canvas image",
 }
 
 CLASSIFY_MODES = {
-    "interactive": "Visualize 7.2 histogram first, then click 'Classify' button (as in slide 7.3)",
+    "interactive": "Visualize 7.2 histogram first, then click 'Classify' button",
     "classify": "Run trained classifier immediately and show top probability on canvas",
     "evaluate": "Evaluate the whole test set (predicted probability gallery)",
 }
@@ -140,7 +144,8 @@ class HistogramSettings:
     model_path: str = ""
     mode: str = "test_set"
     max_images: int = 3  # Slide 7.2 shows 3 test images (butterfly, kangaroo, dalmatian)
-    connect_keypoints: bool = True
+    connect_keypoints: bool = False  # keypoint -> bar lines (slide 7.2); the colours already link them
+    highlight_words: int = HIGHLIGHT_WORDS_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -548,9 +553,14 @@ def sample_keypoints_figure(samples: list[tuple[np.ndarray, np.ndarray, str]]) -
     return figure
 
 
-def word_colour(word_id: int, n_words: int) -> tuple[float, float, float, float]:
-    """A distinct colour per visual word, so keypoints of the same word share a colour."""
-    return colormaps["hsv"](word_id / max(n_words, 1))
+def highlight_colours(hist: np.ndarray, count: int) -> dict[int, tuple[float, float, float, float]]:
+    """``{word: colour}`` for the ``count`` most frequent words of ``hist``; every other word stays grey.
+
+    Few, clearly different colours (tab10) make it easy to match a bar to its keypoints on the image.
+    """
+    count = min(count, len(HIGHLIGHT_PALETTE), int(np.count_nonzero(hist)))
+    top = np.argsort(-hist, kind="stable")[:count]
+    return {int(word): HIGHLIGHT_PALETTE[rank] for rank, word in enumerate(top)}
 
 
 def draw_word_thumbnails(ax: Any, model: BoVWModel, hist: np.ndarray) -> None:
@@ -573,7 +583,8 @@ def draw_word_thumbnails(ax: Any, model: BoVWModel, hist: np.ndarray) -> None:
 def histogram_rows_figure(
     items: list[tuple[Image.Image, str]],
     model: BoVWModel,
-    connect_keypoints: bool = True,
+    connect_keypoints: bool = False,
+    highlight_words: int = 5,
 ) -> Figure:
     """Build the Slide 7.2 figure: each row shows a test image on the left and its visual-word histogram on the right."""
     n_rows = max(1, len(items))
@@ -594,13 +605,15 @@ def histogram_rows_figure(
         ax_img.set_xticks(())
         ax_img.set_yticks(())
 
+        # The most frequent words get a colour, shared by their bar and their keypoints; the rest stay grey
+        colours = highlight_colours(hist, highlight_words)
         ax_hist.bar(
             np.arange(k),
             hist,
             width=0.8,
-            color="lightgray",
+            color=[colours.get(word_id, OTHER_WORDS_COLOUR) for word_id in range(k)],
             edgecolor="dimgray",
-            linewidth=0.8,
+            linewidth=0.6,
         )
         ax_hist.set_title("Histogram of visual words", size=10)
         ax_hist.set_xlabel("Visual word index", size=9)
@@ -611,35 +624,43 @@ def histogram_rows_figure(
         ax_hist.grid(True, axis="y", linestyle=":", alpha=0.6)
         draw_word_thumbnails(ax_hist, model, hist)
 
-        # Slide 7.2: every keypoint, coloured by its visual word, linked by a thin line to the top of that word's bar
-        if connect_keypoints and len(words) > 0:
-            shown = np.arange(len(words))
-            if len(shown) > MAX_CONNECTED_KEYPOINTS:  # keep the figure readable for SIFT's hundreds of keypoints
-                shown = np.random.default_rng(RANDOM_SEED).choice(shown, MAX_CONNECTED_KEYPOINTS, replace=False)
-            for kp_index in shown:
-                word_id = int(words[kp_index])
-                kp_row, kp_col = features.keypoints[int(kp_index)]
-                ax_img.plot(kp_col, kp_row, marker="o", markersize=3.5, color=word_colour(word_id, k), zorder=3)
-                figure.add_artist(
-                    ConnectionPatch(
-                        xyA=(kp_col, kp_row),
-                        coordsA=ax_img.transData,
-                        xyB=(float(word_id), float(hist[word_id])),
-                        coordsB=ax_hist.transData,
-                        color="gray",
-                        alpha=0.3,
-                        linewidth=0.5,
-                    )
+        # Keypoints: the highlighted words' in their colour (all of them), the rest as small grey dots
+        if len(words) > 0:
+            highlighted = np.isin(words, list(colours))
+            others = np.nonzero(~highlighted)[0]
+            if len(others) > MAX_CONNECTED_KEYPOINTS:  # keep the figure readable for SIFT's hundreds of keypoints
+                others = np.sort(np.random.default_rng(RANDOM_SEED).choice(others, MAX_CONNECTED_KEYPOINTS, replace=False))
+            if len(others):
+                ax_img.scatter(
+                    features.keypoints[others, 1], features.keypoints[others, 0], s=6, color="lightgray", alpha=0.8, zorder=2
                 )
-        elif len(features.keypoints) > 0:
-            ax_img.scatter(
-                features.keypoints[:, 1],
-                features.keypoints[:, 0],
-                s=12,
-                facecolors="none",
-                edgecolors="r",
-                linewidths=0.8,
-            )
+            chosen = np.nonzero(highlighted)[0]
+            if len(chosen):
+                ax_img.scatter(
+                    features.keypoints[chosen, 1],
+                    features.keypoints[chosen, 0],
+                    s=22,
+                    c=[colours[int(words[i])] for i in chosen],
+                    edgecolors="black",
+                    linewidths=0.4,
+                    zorder=3,
+                )
+            # Optional thin line from each highlighted keypoint to the top of its word's bar (Slide 7.2)
+            if connect_keypoints:
+                for kp_index in chosen:
+                    word_id = int(words[kp_index])
+                    kp_row, kp_col = features.keypoints[int(kp_index)]
+                    figure.add_artist(
+                        ConnectionPatch(
+                            xyA=(kp_col, kp_row),
+                            coordsA=ax_img.transData,
+                            xyB=(float(word_id), float(hist[word_id])),
+                            coordsB=ax_hist.transData,
+                            color=colours[word_id],
+                            alpha=0.35,
+                            linewidth=0.5,
+                        )
+                    )
 
     return figure
 
@@ -893,6 +914,7 @@ class HistogramDialog(simpledialog.Dialog):
         self.mode = tk.StringVar(value=d.mode)
         self.max_images = tk.StringVar(value=str(d.max_images))
         self.connect_keypoints = tk.BooleanVar(value=d.connect_keypoints)
+        self.highlight_words = tk.StringVar(value=str(d.highlight_words))
 
         model_frame = ttk.LabelFrame(master, text=f"Saved codebook model ({BOVW_MODEL_FILENAME} from Set 7.1)")
         model_frame.grid(row=0, column=0, columnspan=2, sticky="we")
@@ -911,11 +933,12 @@ class HistogramDialog(simpledialog.Dialog):
         opts = ttk.LabelFrame(master, text="Display options")
         opts.grid(row=2, column=0, columnspan=2, sticky="we", pady=(6, 0))
         spin_row(opts, 0, "Test images to show (1–6):", self.max_images, (1, MAX_TEST_HISTOGRAMS), 1)
+        spin_row(opts, 1, "Most frequent words shown in colour (0 = none):", self.highlight_words, HIGHLIGHT_WORDS_RANGE, 1)
         ttk.Checkbutton(
             opts,
-            text="Draw lines connecting keypoints to their visual word bar (as in slide 7.2)",
+            text="Also draw lines from the coloured keypoints to their bar",
             variable=self.connect_keypoints,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=6)
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6)
         return entry
 
     def _browse(self) -> None:
@@ -933,6 +956,7 @@ class HistogramDialog(simpledialog.Dialog):
                 mode=self.mode.get(),
                 max_images=read_number(self.max_images, "Test images to show", (1, MAX_TEST_HISTOGRAMS), int),
                 connect_keypoints=self.connect_keypoints.get(),
+                highlight_words=read_number(self.highlight_words, "Words in colour", HIGHLIGHT_WORDS_RANGE, int),
             )
         except ValueError as error:
             messagebox.showerror(self.title(), str(error), parent=self)
@@ -973,7 +997,9 @@ class VisualWordHistogramTool(ForensicsTool):
             if not items:
                 return ToolResult(message="No test images found for this model.")
 
-        figure = histogram_rows_figure(items, model, connect_keypoints=settings.connect_keypoints)
+        figure = histogram_rows_figure(
+            items, model, connect_keypoints=settings.connect_keypoints, highlight_words=settings.highlight_words
+        )
         out_image = figure_to_image(figure)
 
         details: dict[str, Any] = {
@@ -1038,7 +1064,7 @@ class InteractiveClassifierPopup:
         self.classify_btn = ttk.Button(top_bar, text="Classify", command=self.run_classify)
         self.classify_btn.pack(side="right", padx=(8, 0))
 
-        self.figure = histogram_rows_figure([(image, image_title)], model, connect_keypoints=True)
+        self.figure = histogram_rows_figure([(image, image_title)], model)
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.window)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill="both", expand=True)

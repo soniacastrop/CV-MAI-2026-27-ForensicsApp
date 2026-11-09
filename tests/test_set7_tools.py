@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import matplotlib
 import numpy as np
 from PIL import Image
 from scipy.ndimage import zoom
@@ -248,9 +249,24 @@ class Set7BoVWTests(unittest.TestCase):
         hist = build_histogram(features.descriptors, model.centroids)
         figure = histogram_rows_figure([(image, "dalmatian")], model, connect_keypoints=True)
         lines = [a for a in figure.artists if isinstance(a, ConnectionPatch)]
-        self.assertEqual(len(lines), min(len(features.keypoints), bovw.MAX_CONNECTED_KEYPOINTS))
-        thumbnails = [a for a in figure.axes[1].artists if isinstance(a, AnnotationBbox)]
-        self.assertEqual(len(thumbnails), int(np.count_nonzero(hist)))
+        self.assertEqual(len(histogram_rows_figure([(image, "dalmatian")], model).artists), 0)  # lines off by default
+
+        # The 5 most frequent words are coloured (bar and keypoints alike); every other bar is grey
+        colours = bovw.highlight_colours(hist, 5)
+        top = set(int(w) for w in np.argsort(-hist, kind="stable")[:5])
+        self.assertEqual(set(colours), top)
+        self.assertEqual(len(set(colours.values())), 5)
+        bars = figure.axes[1].patches
+        for word_id, bar in enumerate(bars):
+            expected = colours.get(word_id, matplotlib.colors.to_rgba(bovw.OTHER_WORDS_COLOUR))
+            np.testing.assert_allclose(bar.get_facecolor(), expected)
+        words = assign_visual_words(features.descriptors, model.centroids)
+        coloured_dots = figure.axes[0].collections[-1].get_facecolors()
+        first = int(np.nonzero(np.isin(words, list(colours)))[0][0])
+        np.testing.assert_allclose(coloured_dots[0], colours[int(words[first])])
+        self.assertEqual(len(lines), int(np.isin(words, list(colours)).sum()))  # lines only for coloured keypoints
+        plain = histogram_rows_figure([(image, "dalmatian")], model, highlight_words=0)
+        self.assertTrue(all(np.allclose(b.get_facecolor(), matplotlib.colors.to_rgba("lightgray")) for b in plain.axes[1].patches))
 
     def test_interactive_mode_predicts_only_after_classify(self) -> None:
         model, _, _ = build_codebook(self.root, self.settings)
