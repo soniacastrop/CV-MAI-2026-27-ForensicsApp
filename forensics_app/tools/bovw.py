@@ -23,6 +23,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics.pairwise import additive_chi2_kernel, chi2_kernel
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from sklearn.svm import SVC
 
@@ -158,6 +160,7 @@ class ClassificationSettings:
     classifier: str = "svm_chi2"
     mode: str = "interactive"
     n_gallery: int = 9
+    tfidf: bool = False  # reweight visual words by IDF (rare words count more) before classifying
 
 
 @dataclass(frozen=True)
@@ -481,34 +484,59 @@ def chi2_gamma(histograms: np.ndarray) -> float:
     return 1.0 / mean if mean > 0 else 1.0
 
 
-def fit_classifier(model: BoVWModel, kind: str = "svm_chi2") -> tuple[Any, Any, list[str]]:
+class IdfWeighting(BaseEstimator, TransformerMixin):
+    """TF-IDF for visual words: multiply each normalized histogram (TF) by the word's IDF, then renormalize.
+
+    ``idf_j = ln((1 + N) / (1 + n_j)) + 1`` with ``N`` training images and ``n_j`` of them containing word ``j``
+    (scikit-learn's smoothed IDF). Words found in nearly every image get the lowest weight; IDF is always ≥ 1,
+    so the weighted histograms stay non-negative (needed by the χ² kernel).
+    """
+
+    def fit(self, histograms: np.ndarray, _labels: Any = None) -> IdfWeighting:
+        histograms = np.asarray(histograms, dtype=np.float64)
+        n_images = len(histograms)
+        containing = np.count_nonzero(histograms > 0, axis=0)
+        self.idf_ = np.log((1.0 + n_images) / (1.0 + containing)) + 1.0
+        return self
+
+    def transform(self, histograms: np.ndarray) -> np.ndarray:
+        weighted = np.asarray(histograms, dtype=np.float64) * self.idf_
+        totals = weighted.sum(axis=1, keepdims=True)
+        return np.divide(weighted, totals, out=np.zeros_like(weighted), where=totals > 0)
+
+
+def fit_classifier(model: BoVWModel, kind: str = "svm_chi2", tfidf: bool = False) -> tuple[Any, Any, list[str]]:
     """Fit a probabilistic classifier on ``model.train_histograms`` and ``model.train_labels``.
 
+    ``tfidf`` first reweights the histograms with :class:`IdfWeighting` learned on the training images.
     Returns ``(classifier, preprocessing, classes)``; apply ``preprocessing.transform`` to new histograms.
     """
     if kind not in CLASSIFIERS:
         raise ValueError(f"Classifier must be one of {', '.join(CLASSIFIERS)}.")
+    weighting = IdfWeighting() if tfidf else FunctionTransformer()
+    y_train = model.train_labels
+
     if kind == "svm_chi2":
         # χ²(x, y) = exp(-γ Σ (x_i - y_i)² / (x_i + y_i)): weighs differences relative to the bin size, so rare
         # words count as much as common ones. It needs the raw (non-negative) histograms, so no StandardScaler.
-        identity = FunctionTransformer()
-        kernel = partial(chi2_kernel, gamma=chi2_gamma(model.train_histograms))
+        preprocessing = make_pipeline(weighting)
+        x_train = preprocessing.fit_transform(model.train_histograms)
+        kernel = partial(chi2_kernel, gamma=chi2_gamma(x_train))
         clf: Any = SVC(kernel=kernel, C=1.0, probability=True, random_state=RANDOM_SEED)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)  # probability=True is deprecated from sklearn 1.9
-            clf.fit(identity.fit_transform(model.train_histograms), model.train_labels)
-        return clf, identity, [str(c) for c in clf.classes_]
+            clf.fit(x_train, y_train)
+        return clf, preprocessing, [str(c) for c in clf.classes_]
 
-    scaler = StandardScaler()
-    x_train = scaler.fit_transform(model.train_histograms)
-    y_train = model.train_labels
+    preprocessing = make_pipeline(weighting, StandardScaler())
+    x_train = preprocessing.fit_transform(model.train_histograms)
 
     if kind == "svm_rbf":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
             clf = SVC(kernel="rbf", probability=True, random_state=RANDOM_SEED)
             clf.fit(x_train, y_train)
-        return clf, scaler, [str(c) for c in clf.classes_]
+        return clf, preprocessing, [str(c) for c in clf.classes_]
     if kind == "logistic":
         clf = LogisticRegression(max_iter=1000, random_state=RANDOM_SEED)
     elif kind == "random_forest":
@@ -519,7 +547,7 @@ def fit_classifier(model: BoVWModel, kind: str = "svm_chi2") -> tuple[Any, Any, 
 
     clf.fit(x_train, y_train)
     classes = [str(c) for c in clf.classes_]
-    return clf, scaler, classes
+    return clf, preprocessing, classes
 
 
 def predict_image_probabilities(
@@ -527,6 +555,7 @@ def predict_image_probabilities(
     model: BoVWModel,
     kind: str = "svm_chi2",
     trained: tuple[Any, Any, list[str]] | None = None,
+    tfidf: bool = False,
 ) -> tuple[str, float, dict[str, float], np.ndarray]:
     """Extract features of ``image``, build its visual-word histogram, and return ``(best_class, best_prob, probs_by_class, histogram)``.
 
@@ -534,7 +563,7 @@ def predict_image_probabilities(
     """
     features = extract_features(image, model.matching_settings())
     histogram = build_histogram(features.descriptors, model.centroids, normalize=True)
-    clf, scaler, classes = trained if trained is not None else fit_classifier(model, kind)
+    clf, scaler, classes = trained if trained is not None else fit_classifier(model, kind, tfidf)
     probs = clf.predict_proba(scaler.transform(histogram.reshape(1, -1)))[0]
     prob_map = {cls: float(prob) for cls, prob in zip(classes, probs)}
     best_idx = int(np.argmax(probs))
@@ -1061,6 +1090,7 @@ class InteractiveClassifierPopup:
         image_title: str,
         model: BoVWModel,
         classifier_kind: str,
+        tfidf: bool = False,
     ) -> None:
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -1075,7 +1105,8 @@ class InteractiveClassifierPopup:
         with ProgressPopup(parent, "Image classification") as progress:
             # trained once on the 7.1 training histograms, reused by every click on "Classify"
             self.trained = progress.run(
-                f"Training the classifier ({CLASSIFIERS[classifier_kind]})…", lambda: fit_classifier(model, classifier_kind)
+                f"Training the classifier ({CLASSIFIERS[classifier_kind]})…",
+                lambda: fit_classifier(model, classifier_kind, tfidf),
             )
             self.figure = progress.run(
                 f"Extracting {model.descriptor.upper()} features and building the histogram…",
@@ -1140,6 +1171,7 @@ class ClassificationDialog(simpledialog.Dialog):
         self.classifier = tk.StringVar(value=d.classifier)
         self.mode = tk.StringVar(value=d.mode)
         self.n_gallery = tk.StringVar(value=str(d.n_gallery))
+        self.tfidf = tk.BooleanVar(value=d.tfidf)
 
         model_frame = ttk.LabelFrame(master, text=f"Saved codebook model ({BOVW_MODEL_FILENAME} from Set 7.1)")
         model_frame.grid(row=0, column=0, columnspan=2, sticky="we")
@@ -1161,8 +1193,16 @@ class ClassificationDialog(simpledialog.Dialog):
                 row=row, column=0, columnspan=2, sticky="w", padx=6
             )
 
+        weighting = ttk.LabelFrame(master, text="Histogram weighting")
+        weighting.grid(row=3, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        ttk.Checkbutton(
+            weighting,
+            text="TF-IDF: give less weight to visual words found in most training images",
+            variable=self.tfidf,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6)
+
         opts = ttk.LabelFrame(master, text="Evaluation options")
-        opts.grid(row=3, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        opts.grid(row=4, column=0, columnspan=2, sticky="we", pady=(6, 0))
         spin_row(opts, 0, "Test evaluation gallery size:", self.n_gallery, (1, 36), 3)
         return entry
 
@@ -1181,6 +1221,7 @@ class ClassificationDialog(simpledialog.Dialog):
                 classifier=self.classifier.get(),
                 mode=self.mode.get(),
                 n_gallery=read_number(self.n_gallery, "Gallery size", (1, 36), int),
+                tfidf=self.tfidf.get(),
             )
         except ValueError as error:
             messagebox.showerror(self.title(), str(error), parent=self)
@@ -1216,12 +1257,15 @@ class BoVWClassificationTool(ForensicsTool):
             "Operation": "BoVW Image Classification (Set 7.3)",
             "Model": settings.model_path,
             "Classifier": CLASSIFIERS[settings.classifier],
+            "TF-IDF weighting": "yes (IDF from the training images)" if settings.tfidf else "no",
             "Visual words (K)": model.n_words,
         }
 
         if settings.mode == "interactive":
             # Slide 7.3: show the 7.2 histogram first; the prediction only appears after clicking "Classify"
-            popup = InteractiveClassifierPopup(parent, document.current, img_title, model, settings.classifier)
+            popup = InteractiveClassifierPopup(
+                parent, document.current, img_title, model, settings.classifier, settings.tfidf
+            )
             parent.winfo_toplevel()._bovw_popup = popup  # keep reference alive
             return ToolResult(
                 image=figure_to_image(popup.figure),
@@ -1233,7 +1277,7 @@ class BoVWClassificationTool(ForensicsTool):
         with ProgressPopup(parent, "Image classification") as progress:
             pred_cls, best_prob, prob_map, _hist = progress.run(
                 f"Training the classifier and classifying the image ({CLASSIFIERS[settings.classifier]})…",
-                lambda: predict_image_probabilities(image, model, settings.classifier),
+                lambda: predict_image_probabilities(image, model, settings.classifier, tfidf=settings.tfidf),
             )
         details |= {
             "Predicted class": pred_cls,
@@ -1276,7 +1320,7 @@ class BoVWClassificationTool(ForensicsTool):
         with ProgressPopup(parent, "Evaluate test set") as progress:
             clf, scaler, classes = progress.run(
                 f"Training the classifier ({CLASSIFIERS[settings.classifier]})…",
-                lambda: fit_classifier(model, settings.classifier),
+                lambda: fit_classifier(model, settings.classifier, settings.tfidf),
             )
             total = len(model.test_paths)
             for index, (rel_path, truth) in enumerate(zip(model.test_paths, model.test_labels)):
@@ -1312,6 +1356,7 @@ class BoVWClassificationTool(ForensicsTool):
         details: dict[str, Any] = {
             "Operation": "BoVW Test Set Evaluation",
             "Classifier": CLASSIFIERS[settings.classifier],
+            "TF-IDF weighting": "yes (IDF from the training images)" if settings.tfidf else "no",
             "Visual words (K)": model.n_words,
             "Test images": len(images),
             "Accuracy": f"{accuracy:.1%} ({sum(correct)}/{len(images)})",

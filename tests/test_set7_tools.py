@@ -275,7 +275,7 @@ class Set7BoVWTests(unittest.TestCase):
         settings = ClassificationSettings(model_path=str(model_path), mode="interactive")
 
         class FakePopup:
-            def __init__(self, _parent, image, title, model, kind) -> None:
+            def __init__(self, _parent, image, title, model, kind, tfidf=False) -> None:
                 self.figure = histogram_rows_figure([(image, title)], model)
 
         with mock.patch.object(bovw, "ClassificationDialog", **{"return_value.result": settings}), mock.patch.object(
@@ -299,6 +299,35 @@ class Set7BoVWTests(unittest.TestCase):
                  for i in range(len(h)) for j in range(i + 1, len(h))]
         self.assertAlmostEqual(bovw.chi2_gamma(h), 1.0 / np.mean(pairs), places=6)
         self.assertEqual(bovw.chi2_gamma(h[:1]), 1.0)
+
+    def test_tfidf_weighting(self) -> None:
+        histograms = np.array([[0.5, 0.5, 0.0], [0.5, 0.0, 0.5], [1.0, 0.0, 0.0]])
+        weighting = bovw.IdfWeighting().fit(histograms)
+        # word 0 is in all 3 images, words 1 and 2 in one: idf = ln(4 / (1 + n)) + 1
+        np.testing.assert_allclose(weighting.idf_, [1.0, np.log(2) + 1, np.log(2) + 1])
+        weighted = weighting.transform(histograms)
+        np.testing.assert_allclose(weighted.sum(axis=1), 1.0)
+        self.assertLess(weighted[0, 0], weighted[0, 1])  # the word every image has now counts less
+        self.assertTrue((weighted >= 0).all())
+        np.testing.assert_array_equal(weighting.transform(np.zeros((1, 3))), np.zeros((1, 3)))
+
+        model, _, _ = build_codebook(self.root, self.settings)
+        query = _class_image(1, 42)
+        for kind in bovw.CLASSIFIERS:
+            with self.subTest(classifier=kind):
+                clf, preprocessing, classes = fit_classifier(model, kind, tfidf=True)
+                self.assertIsInstance(preprocessing.steps[0][1], bovw.IdfWeighting)
+                pred, best, probs, _ = predict_image_probabilities(query, model, kind, tfidf=True)
+                self.assertIn(pred, CLASSES)
+                self.assertAlmostEqual(sum(probs.values()), 1.0, places=5)
+        self.assertFalse(ClassificationSettings().tfidf)
+
+        model_path = self.root / BOVW_MODEL_FILENAME
+        save_bovw_model(model, model_path)
+        settings = ClassificationSettings(model_path=str(model_path), mode="evaluate", tfidf=True)
+        with mock.patch.object(bovw, "ClassificationDialog", **{"return_value.result": settings}):
+            result = BoVWClassificationTool().run(_parent(), _document(query))
+        self.assertTrue(result.details["TF-IDF weighting"].startswith("yes"))
 
     def test_trained_classifier_is_reused(self) -> None:
         model, _, _ = build_codebook(self.root, self.settings)
