@@ -1049,7 +1049,15 @@ class InteractiveClassifierPopup:
         self.predicted_class = ""
         self.top_probability = 0.0
         self.probabilities: dict[str, float] = {}
-        self.trained = fit_classifier(model, classifier_kind)  # trained once on the 7.1 training histograms
+        with ProgressPopup(parent, "Image classification") as progress:
+            # trained once on the 7.1 training histograms, reused by every click on "Classify"
+            self.trained = progress.run(
+                f"Training the classifier ({CLASSIFIERS[classifier_kind]})…", lambda: fit_classifier(model, classifier_kind)
+            )
+            self.figure = progress.run(
+                f"Extracting {model.descriptor.upper()} features and building the histogram…",
+                lambda: histogram_rows_figure([(image, image_title)], model),
+            )
 
         self.window = tk.Toplevel(parent)
         self.window.title("Set 7.3 Classification — Visualize histogram & Classify")
@@ -1064,15 +1072,20 @@ class InteractiveClassifierPopup:
         self.classify_btn = ttk.Button(top_bar, text="Classify", command=self.run_classify)
         self.classify_btn.pack(side="right", padx=(8, 0))
 
-        self.figure = histogram_rows_figure([(image, image_title)], model)
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.window)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def run_classify(self) -> None:
-        pred_cls, best_prob, prob_map, _hist = predict_image_probabilities(
-            self.image, self.model, self.classifier_kind, self.trained
-        )
+        self.classify_btn.configure(state="disabled")
+        try:
+            with ProgressPopup(self.window, "Classify") as progress:
+                pred_cls, best_prob, prob_map, _hist = progress.run(
+                    "Classifying the image…",
+                    lambda: predict_image_probabilities(self.image, self.model, self.classifier_kind, self.trained),
+                )
+        finally:
+            self.classify_btn.configure(state="normal")
         self.classified = True
         self.predicted_class = pred_cls
         self.top_probability = best_prob
@@ -1173,7 +1186,7 @@ class BoVWClassificationTool(ForensicsTool):
 
         model = load_bovw_model(Path(settings.model_path))
         if settings.mode == "evaluate":
-            return self._evaluate_test_set(model, settings)
+            return self._evaluate_test_set(model, settings, parent)
 
         img_title = document.path.stem if document.path else "query"
         details: dict[str, Any] = {
@@ -1193,9 +1206,12 @@ class BoVWClassificationTool(ForensicsTool):
                 details=details,
             )
 
-        pred_cls, best_prob, prob_map, _hist = predict_image_probabilities(
-            document.current, model, settings.classifier
-        )
+        image = document.current
+        with ProgressPopup(parent, "Image classification") as progress:
+            pred_cls, best_prob, prob_map, _hist = progress.run(
+                f"Training the classifier and classifying the image ({CLASSIFIERS[settings.classifier]})…",
+                lambda: predict_image_probabilities(image, model, settings.classifier),
+            )
         details |= {
             "Predicted class": pred_cls,
             "Top probability": f"p({pred_cls}) = {best_prob:.2f}",
@@ -1211,31 +1227,45 @@ class BoVWClassificationTool(ForensicsTool):
         )
 
     @staticmethod
-    def _evaluate_test_set(model: BoVWModel, settings: ClassificationSettings) -> ToolResult:
+    def _evaluate_test_set(model: BoVWModel, settings: ClassificationSettings, parent: Any = None) -> ToolResult:
         if model.root is None or len(model.test_paths) == 0:
             raise ValueError("This model has no test split to evaluate.")
+        root = model.root
 
-        clf, scaler, classes = fit_classifier(model, settings.classifier)
         images: list[np.ndarray] = []
         truths: list[str] = []
         preds: list[str] = []
         top_probs: list[float] = []
 
-        for rel_path, truth in zip(model.test_paths, model.test_labels):
-            full_path = model.root / str(rel_path)
+        def classify_one(full_path: Path) -> tuple[np.ndarray, int, float] | None:
             try:
                 with Image.open(full_path) as opened:
                     img = opened.copy()
             except (OSError, UnidentifiedImageError):
-                continue
+                return None
             feats = extract_features(img, model.matching_settings())
             hist = build_histogram(feats.descriptors, model.centroids, normalize=True)
             probs = clf.predict_proba(scaler.transform(hist.reshape(1, -1)))[0]
             best_idx = int(np.argmax(probs))
-            images.append(np.asarray(img.convert("RGB").resize((120, 120), Image.Resampling.LANCZOS)))
-            truths.append(str(truth))
-            preds.append(classes[best_idx])
-            top_probs.append(float(probs[best_idx]))
+            thumbnail = np.asarray(img.convert("RGB").resize((120, 120), Image.Resampling.LANCZOS))
+            return thumbnail, best_idx, float(probs[best_idx])
+
+        with ProgressPopup(parent, "Evaluate test set") as progress:
+            clf, scaler, classes = progress.run(
+                f"Training the classifier ({CLASSIFIERS[settings.classifier]})…",
+                lambda: fit_classifier(model, settings.classifier),
+            )
+            total = len(model.test_paths)
+            for index, (rel_path, truth) in enumerate(zip(model.test_paths, model.test_labels)):
+                progress.step(index, total, f"Classifying test images: {rel_path}")
+                outcome = classify_one(root / str(rel_path))
+                if outcome is None:
+                    continue
+                thumbnail, best_idx, top_prob = outcome
+                images.append(thumbnail)
+                truths.append(str(truth))
+                preds.append(classes[best_idx])
+                top_probs.append(top_prob)
 
         if not images:
             return ToolResult(message="Could not open any test images for evaluation.")
