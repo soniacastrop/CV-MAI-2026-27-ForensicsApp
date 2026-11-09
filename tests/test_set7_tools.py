@@ -329,6 +329,29 @@ class Set7BoVWTests(unittest.TestCase):
             result = BoVWClassificationTool().run(_parent(), _document(query))
         self.assertTrue(result.details["TF-IDF weighting"].startswith("yes"))
 
+    def test_tfidf_histograms_in_7_2(self) -> None:
+        model, _, _ = build_codebook(self.root, self.settings)
+        image = _class_image(0, 100)
+        features = bovw.extract_features(image, model.matching_settings())
+        plain = build_histogram(features.descriptors, model.centroids)
+        expected = bovw.IdfWeighting().fit(model.train_histograms).transform(plain.reshape(1, -1))[0]
+
+        figure = histogram_rows_figure([(image, "butterfly")], model, tfidf=True)
+        heights = [bar.get_height() for bar in figure.axes[1].patches]
+        np.testing.assert_allclose(heights, expected)
+        self.assertIn("TF-IDF", figure.axes[1].get_title())
+        self.assertEqual(figure.axes[1].get_ylabel(), "Normalized TF-IDF weight")
+        plain_figure = histogram_rows_figure([(image, "butterfly")], model)
+        np.testing.assert_allclose([bar.get_height() for bar in plain_figure.axes[1].patches], plain)
+        self.assertFalse(HistogramSettings().tfidf)
+
+        model_path = self.root / BOVW_MODEL_FILENAME
+        save_bovw_model(model, model_path)
+        settings = HistogramSettings(model_path=str(model_path), mode="test_set", max_images=2, tfidf=True)
+        with mock.patch.object(bovw, "HistogramDialog", **{"return_value.result": settings}):
+            result = VisualWordHistogramTool().run(_parent(), _document())
+        self.assertTrue(result.details["TF-IDF weighting"].startswith("yes"))
+
     def test_trained_classifier_is_reused(self) -> None:
         model, _, _ = build_codebook(self.root, self.settings)
         trained = fit_classifier(model, "logistic")

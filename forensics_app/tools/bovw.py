@@ -152,6 +152,7 @@ class HistogramSettings:
     max_images: int = 3  # Slide 7.2 shows 3 test images (butterfly, kangaroo, dalmatian)
     connect_keypoints: bool = False  # keypoint -> bar lines (slide 7.2); the colours already link them
     highlight_words: int = HIGHLIGHT_WORDS_DEFAULT
+    tfidf: bool = False  # show TF-IDF weighted histograms (IDF learned on the training images)
 
 
 @dataclass(frozen=True)
@@ -637,8 +638,13 @@ def histogram_rows_figure(
     model: BoVWModel,
     connect_keypoints: bool = False,
     highlight_words: int = 5,
+    tfidf: bool = False,
 ) -> Figure:
-    """Build the Slide 7.2 figure: each row shows a test image on the left and its visual-word histogram on the right."""
+    """Build the Slide 7.2 figure: each row shows a test image on the left and its visual-word histogram on the right.
+
+    ``tfidf`` shows the histograms reweighted by :class:`IdfWeighting` (IDF from the model's training histograms).
+    """
+    weighting = IdfWeighting().fit(model.train_histograms) if tfidf else None
     n_rows = max(1, len(items))
     k = model.n_words
     figure = Figure(figsize=(11.0, 3.2 * n_rows), layout="constrained")
@@ -651,6 +657,8 @@ def histogram_rows_figure(
         features = extract_features(image, match_settings)
         words = assign_visual_words(features.descriptors, model.centroids)
         hist = build_histogram(features.descriptors, model.centroids, normalize=True)
+        if weighting is not None:
+            hist = weighting.transform(hist.reshape(1, -1))[0]
 
         ax_img.imshow(features.gray, cmap="gray")
         ax_img.set_title(title, size=10)
@@ -667,9 +675,9 @@ def histogram_rows_figure(
             edgecolor="dimgray",
             linewidth=0.6,
         )
-        ax_hist.set_title("Histogram of visual words", size=10)
+        ax_hist.set_title("TF-IDF weighted histogram of visual words" if tfidf else "Histogram of visual words", size=10)
         ax_hist.set_xlabel("Visual word index", size=9)
-        ax_hist.set_ylabel("Normalized frequency", size=9)
+        ax_hist.set_ylabel("Normalized TF-IDF weight" if tfidf else "Normalized frequency", size=9)
         ax_hist.set_xlim(-0.8, k - 0.2)
         upper = max(float(hist.max()) * 1.15, 0.05)
         ax_hist.set_ylim(0.0, upper)
@@ -967,6 +975,7 @@ class HistogramDialog(simpledialog.Dialog):
         self.max_images = tk.StringVar(value=str(d.max_images))
         self.connect_keypoints = tk.BooleanVar(value=d.connect_keypoints)
         self.highlight_words = tk.StringVar(value=str(d.highlight_words))
+        self.tfidf = tk.BooleanVar(value=d.tfidf)
 
         model_frame = ttk.LabelFrame(master, text=f"Saved codebook model ({BOVW_MODEL_FILENAME} from Set 7.1)")
         model_frame.grid(row=0, column=0, columnspan=2, sticky="we")
@@ -991,6 +1000,11 @@ class HistogramDialog(simpledialog.Dialog):
             text="Also draw lines from the coloured keypoints to their bar",
             variable=self.connect_keypoints,
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6)
+        ttk.Checkbutton(
+            opts,
+            text="TF-IDF: give less weight to visual words found in most training images",
+            variable=self.tfidf,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=6)
         return entry
 
     def _browse(self) -> None:
@@ -1009,6 +1023,7 @@ class HistogramDialog(simpledialog.Dialog):
                 max_images=read_number(self.max_images, "Test images to show", (1, MAX_TEST_HISTOGRAMS), int),
                 connect_keypoints=self.connect_keypoints.get(),
                 highlight_words=read_number(self.highlight_words, "Words in colour", HIGHLIGHT_WORDS_RANGE, int),
+                tfidf=self.tfidf.get(),
             )
         except ValueError as error:
             messagebox.showerror(self.title(), str(error), parent=self)
@@ -1050,7 +1065,11 @@ class VisualWordHistogramTool(ForensicsTool):
                 return ToolResult(message="No test images found for this model.")
 
         figure = histogram_rows_figure(
-            items, model, connect_keypoints=settings.connect_keypoints, highlight_words=settings.highlight_words
+            items,
+            model,
+            connect_keypoints=settings.connect_keypoints,
+            highlight_words=settings.highlight_words,
+            tfidf=settings.tfidf,
         )
         out_image = figure_to_image(figure)
 
@@ -1061,10 +1080,14 @@ class VisualWordHistogramTool(ForensicsTool):
             "Descriptor": model.descriptor.upper(),
             "Mode": HISTOGRAM_MODES[settings.mode],
             "Images visualized": len(items),
+            "TF-IDF weighting": "yes (IDF from the training images)" if settings.tfidf else "no",
         }
+        weighting = IdfWeighting().fit(model.train_histograms) if settings.tfidf else None
         for idx, (img, title) in enumerate(items, start=1):
             feats = extract_features(img, model.matching_settings())
             hist = build_histogram(feats.descriptors, model.centroids, normalize=True)
+            if weighting is not None:
+                hist = weighting.transform(hist.reshape(1, -1))[0]
             top_word = int(np.argmax(hist)) if len(hist) else 0
             details[f"Image #{idx} ({title})"] = (
                 f"{len(feats.keypoints)} keypoints, peak visual word = vw {top_word} ({hist[top_word]:.2f})"
@@ -1110,7 +1133,7 @@ class InteractiveClassifierPopup:
             )
             self.figure = progress.run(
                 f"Extracting {model.descriptor.upper()} features and building the histogram…",
-                lambda: histogram_rows_figure([(image, image_title)], model),
+                lambda: histogram_rows_figure([(image, image_title)], model, tfidf=tfidf),
             )
 
         self.window = tk.Toplevel(parent)
