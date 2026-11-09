@@ -654,10 +654,24 @@ class ProgressPopupTests(unittest.TestCase):
         try:
             with ProgressPopup(root, "t") as popup:
                 popup.step(4, 10, "loading")
-                self.assertEqual(popup.bar["value"], 5)
+                self.assertEqual(popup.bar["value"], 4)  # 4 finished while item 5 is processed
                 self.assertNotEqual(popup.run("work", threading.get_ident), threading.get_ident())
                 with self.assertRaisesRegex(ValueError, "boom"):
                     popup.run("fail", lambda: (_ for _ in ()).throw(ValueError("boom")))
             self.assertIsNone(popup.window)
+            with ProgressPopup(root, "loop") as popup:
+                popup.step(0, 4, "first")
+                self.assertNotIn("left", popup.count["text"])
+                done = [popup.run_step(i, 4, f"item {i}", lambda i=i: (i, threading.get_ident())) for i in range(1, 4)]
+                self.assertEqual([i for i, _ in done], [1, 2, 3])
+                self.assertTrue(all(ident != threading.get_ident() for _, ident in done))
+                self.assertIn("left", popup.count["text"])
+                self.assertEqual(popup.bar["value"], 3)
         finally:
             root.destroy()
+
+    def test_format_seconds(self) -> None:
+        from forensics_app.tools.progress import format_seconds
+
+        self.assertEqual(format_seconds(42.4), "42 s")
+        self.assertEqual(format_seconds(185), "3 min 05 s")

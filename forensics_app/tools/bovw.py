@@ -1257,8 +1257,10 @@ class BoVWClassificationTool(ForensicsTool):
             )
             total = len(model.test_paths)
             for index, (rel_path, truth) in enumerate(zip(model.test_paths, model.test_labels)):
-                progress.step(index, total, f"Classifying test images: {rel_path}")
-                outcome = classify_one(root / str(rel_path))
+                path = root / str(rel_path)
+                outcome = progress.run_step(
+                    index, total, f"Classifying test images: {rel_path}", lambda: classify_one(path)
+                )
                 if outcome is None:
                     continue
                 thumbnail, best_idx, top_prob = outcome

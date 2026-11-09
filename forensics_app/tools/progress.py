@@ -17,13 +17,15 @@ POLL_SECONDS = 0.03  # how often the popup is redrawn while a background job run
 class ProgressPopup:
     """Popup with a message and a progress bar, used as a context manager.
 
-    ``step(i, total, text)`` shows a determinate bar (call it from the Tk thread, e.g. inside a loop);
-    ``run(text, func)`` runs ``func`` in a worker thread with a moving bar so the window never looks frozen.
+    ``step(i, total, text)`` shows a determinate bar with elapsed / remaining time (call it from the Tk thread);
+    ``run(text, func)`` runs ``func`` in a worker thread with a moving bar so the window never looks frozen;
+    ``run_step(i, total, text, func)`` does both: item ``i`` of a loop computed in a worker thread.
     Without a real Tk parent (unit tests with mocks) it does nothing and ``run`` just calls ``func``.
     """
 
     def __init__(self, parent: Any, title: str, text: str = "Working…") -> None:
         self.window: tk.Toplevel | None = None
+        self._loop_start: float | None = None  # time of the first step(), for the remaining-time estimate
         if not isinstance(parent, tk.Misc):
             return
         window = tk.Toplevel(parent)
@@ -56,11 +58,26 @@ class ProgressPopup:
         if self.window is None:
             return
         self.bar.stop()
-        self.bar.configure(mode="determinate", maximum=max(total, 1), value=index + 1)
+        self.bar.configure(mode="determinate", maximum=max(total, 1), value=index)
         if text is not None:
             self.label.configure(text=text)
-        self.count.configure(text=f"{index + 1} / {total}")
+        self.count.configure(text=f"{index + 1} / {total}{self._timing(index, total)}")
         self.window.update()
+
+    def _timing(self, index: int, total: int) -> str:
+        """``  ·  12 s elapsed, ~30 s left`` once a few items are done (index = items already finished)."""
+        now = time.monotonic()
+        if self._loop_start is None or index == 0:
+            self._loop_start = now
+            return ""
+        elapsed = now - self._loop_start
+        left = elapsed / index * (total - index)
+        return f"  ·  {format_seconds(elapsed)} elapsed, ~{format_seconds(left)} left"
+
+    def run_step(self, index: int, total: int, text: str, func: Callable[[], T]) -> T:
+        """Item ``index`` of ``total``: update the bar, then compute ``func()`` in a worker thread."""
+        self.step(index, total, text)
+        return self._in_thread(func)
 
     def run(self, text: str, func: Callable[[], T]) -> T:
         """``func()`` in a worker thread (it must not touch Tk) while the bar keeps moving."""
@@ -70,6 +87,15 @@ class ProgressPopup:
         self.count.configure(text="")
         self.bar.configure(mode="indeterminate", maximum=100, value=0)
         self.bar.start(15)
+        try:
+            return self._in_thread(func)
+        finally:
+            self.bar.stop()
+
+    def _in_thread(self, func: Callable[[], T]) -> T:
+        """``func()`` in a worker thread while the popup keeps redrawing; exceptions are re-raised here."""
+        if self.window is None:
+            return func()
         outcome: dict[str, Any] = {}
 
         def work() -> None:
@@ -83,7 +109,6 @@ class ProgressPopup:
         while worker.is_alive():
             self.window.update()
             time.sleep(POLL_SECONDS)
-        self.bar.stop()
         if "error" in outcome:
             raise outcome["error"]
         return outcome["value"]
@@ -94,4 +119,10 @@ class ProgressPopup:
             self.window = None
 
 
-__all__ = ["ProgressPopup"]
+def format_seconds(seconds: float) -> str:
+    """``42 s`` or ``3 min 05 s``."""
+    seconds = int(round(seconds))
+    return f"{seconds} s" if seconds < 60 else f"{seconds // 60} min {seconds % 60:02d} s"
+
+
+__all__ = ["ProgressPopup", "format_seconds"]
