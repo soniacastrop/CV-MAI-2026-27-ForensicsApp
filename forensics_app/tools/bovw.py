@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
+import warnings
 
 from matplotlib import colormaps
 from matplotlib.figure import Figure
@@ -20,7 +22,8 @@ from sklearn.cluster import MiniBatchKMeans
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import StandardScaler
+from sklearn.metrics.pairwise import additive_chi2_kernel, chi2_kernel
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 from sklearn.svm import SVC
 
 from forensics_app.core import ImageDocument
@@ -92,6 +95,7 @@ AUTO_TEST_FRACTION = 0.25
 RANDOM_SEED = 0
 
 CLASSIFIERS = {
+    "svm_chi2": "SVM (χ² kernel, the standard for histograms)",
     "svm_rbf": "SVM (RBF kernel, probability=True)",
     "logistic": "Logistic Regression (multinomial)",
     "random_forest": "Random Forest (100 trees)",
@@ -151,7 +155,7 @@ class HistogramSettings:
 @dataclass(frozen=True)
 class ClassificationSettings:
     model_path: str = ""
-    classifier: str = "svm_rbf"
+    classifier: str = "svm_chi2"
     mode: str = "interactive"
     n_gallery: int = 9
 
@@ -470,20 +474,39 @@ def find_bovw_model(image_path: Path | None = None) -> Path | None:
 # ---------------------------------------------------------------- 7.3 Classifier training & prediction
 
 
-def fit_classifier(model: BoVWModel, kind: str = "svm_rbf") -> tuple[Any, StandardScaler, list[str]]:
-    """Fit a probabilistic classifier on ``model.train_histograms`` and ``model.train_labels``."""
+def chi2_gamma(histograms: np.ndarray) -> float:
+    """``1 / mean χ² distance`` between training histograms: the usual γ for a χ² kernel (Zhang et al., 2007)."""
+    distances = -additive_chi2_kernel(histograms)  # sum_i (x_i - y_i)² / (x_i + y_i) for every pair
+    mean = float(distances[np.triu_indices(len(histograms), k=1)].mean()) if len(histograms) > 1 else 0.0
+    return 1.0 / mean if mean > 0 else 1.0
+
+
+def fit_classifier(model: BoVWModel, kind: str = "svm_chi2") -> tuple[Any, Any, list[str]]:
+    """Fit a probabilistic classifier on ``model.train_histograms`` and ``model.train_labels``.
+
+    Returns ``(classifier, preprocessing, classes)``; apply ``preprocessing.transform`` to new histograms.
+    """
     if kind not in CLASSIFIERS:
         raise ValueError(f"Classifier must be one of {', '.join(CLASSIFIERS)}.")
+    if kind == "svm_chi2":
+        # χ²(x, y) = exp(-γ Σ (x_i - y_i)² / (x_i + y_i)): weighs differences relative to the bin size, so rare
+        # words count as much as common ones. It needs the raw (non-negative) histograms, so no StandardScaler.
+        identity = FunctionTransformer()
+        kernel = partial(chi2_kernel, gamma=chi2_gamma(model.train_histograms))
+        clf: Any = SVC(kernel=kernel, C=1.0, probability=True, random_state=RANDOM_SEED)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)  # probability=True is deprecated from sklearn 1.9
+            clf.fit(identity.fit_transform(model.train_histograms), model.train_labels)
+        return clf, identity, [str(c) for c in clf.classes_]
+
     scaler = StandardScaler()
     x_train = scaler.fit_transform(model.train_histograms)
     y_train = model.train_labels
 
     if kind == "svm_rbf":
-        import warnings
-
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
-            clf: Any = SVC(kernel="rbf", probability=True, random_state=RANDOM_SEED)
+            clf = SVC(kernel="rbf", probability=True, random_state=RANDOM_SEED)
             clf.fit(x_train, y_train)
         return clf, scaler, [str(c) for c in clf.classes_]
     if kind == "logistic":
@@ -502,8 +525,8 @@ def fit_classifier(model: BoVWModel, kind: str = "svm_rbf") -> tuple[Any, Standa
 def predict_image_probabilities(
     image: Image.Image,
     model: BoVWModel,
-    kind: str = "svm_rbf",
-    trained: tuple[Any, StandardScaler, list[str]] | None = None,
+    kind: str = "svm_chi2",
+    trained: tuple[Any, Any, list[str]] | None = None,
 ) -> tuple[str, float, dict[str, float], np.ndarray]:
     """Extract features of ``image``, build its visual-word histogram, and return ``(best_class, best_prob, probs_by_class, histogram)``.
 

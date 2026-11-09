@@ -172,7 +172,7 @@ class Set7BoVWTests(unittest.TestCase):
     def test_classifiers_and_probabilities_sum_to_one(self) -> None:
         model, _, _ = build_codebook(self.root, self.settings)
         query = _class_image(2, 99)
-        for kind in ("svm_rbf", "logistic", "random_forest", "knn"):
+        for kind in ("svm_chi2", "svm_rbf", "logistic", "random_forest", "knn"):
             with self.subTest(classifier=kind):
                 pred, best_prob, prob_map, hist = predict_image_probabilities(query, model, kind)
                 self.assertIn(pred, CLASSES)
@@ -285,6 +285,20 @@ class Set7BoVWTests(unittest.TestCase):
         predict.assert_not_called()
         self.assertNotIn("Predicted class", result.details)
         self.assertIn("Classify", result.message)
+
+    def test_chi2_svm_is_default_and_uses_raw_histograms(self) -> None:
+        self.assertEqual(ClassificationSettings().classifier, "svm_chi2")
+        self.assertEqual(next(iter(bovw.CLASSIFIERS)), "svm_chi2")
+        model, _, _ = build_codebook(self.root, self.settings)
+        clf, preprocessing, classes = fit_classifier(model, "svm_chi2")
+        np.testing.assert_array_equal(preprocessing.transform(model.train_histograms), model.train_histograms)
+        self.assertEqual(sorted(classes), sorted(CLASSES))
+        # γ = 1 / mean χ² distance between distinct training histograms
+        h = model.train_histograms
+        pairs = [np.sum((h[i] - h[j]) ** 2 / np.maximum(h[i] + h[j], 1e-300) * ((h[i] + h[j]) > 0))
+                 for i in range(len(h)) for j in range(i + 1, len(h))]
+        self.assertAlmostEqual(bovw.chi2_gamma(h), 1.0 / np.mean(pairs), places=6)
+        self.assertEqual(bovw.chi2_gamma(h[:1]), 1.0)
 
     def test_trained_classifier_is_reused(self) -> None:
         model, _, _ = build_codebook(self.root, self.settings)
