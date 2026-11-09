@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -209,6 +210,73 @@ class Set7BoVWTests(unittest.TestCase):
         self.assertIsNotNone(res_eval.image)
         self.assertIn("Accuracy", res_eval.details)
 
+
+    def test_wrapper_folder_and_macosx_are_skipped(self) -> None:
+        # The class zip unpacks to Caltech_101_subset/{Caltech_101_subset/<class>, __MACOSX}
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = Path(tmp)
+            inner = outer / "Caltech_101_subset"
+            for idx, cls_name in enumerate(CLASSES):
+                (inner / cls_name).mkdir(parents=True)
+                for i in range(4):
+                    _class_image(idx, i).save(inner / cls_name / f"{cls_name}_{i}.png")
+            (outer / "__MACOSX" / "Caltech_101_subset").mkdir(parents=True)
+            (outer / "__MACOSX" / "Caltech_101_subset" / "._butterfly.png").write_bytes(b"junk")
+            self.assertEqual(bovw.dataset_root(outer), inner)
+            self.assertEqual(bovw.dataset_root(self.root), self.root)  # train/ is not a wrapper
+            model, _, failed = build_codebook(outer, replace(self.settings, folder=str(outer)))
+            self.assertEqual(model.root, inner)
+            self.assertEqual(model.classes, sorted(CLASSES))
+            self.assertEqual(failed, [])
+
+    def test_keypoint_samples_mix_classes_and_descriptor_count_is_kept(self) -> None:
+        model, samples, _ = build_codebook(self.root, self.settings)
+        self.assertEqual([label for _, _, label in samples[:3]], sorted(CLASSES))
+        self.assertEqual(len(samples), 10)
+        self.assertGreater(model.n_descriptors, model.n_words)
+        model_path = self.root / BOVW_MODEL_FILENAME
+        save_bovw_model(model, model_path)
+        self.assertEqual(load_bovw_model(model_path).n_descriptors, model.n_descriptors)
+
+    def test_histogram_figure_links_keypoints_and_shows_word_patches(self) -> None:
+        from matplotlib.offsetbox import AnnotationBbox
+        from matplotlib.patches import ConnectionPatch
+
+        model, _, _ = build_codebook(self.root, self.settings)
+        image = _class_image(2, 100)
+        features = bovw.extract_features(image, model.matching_settings())
+        hist = build_histogram(features.descriptors, model.centroids)
+        figure = histogram_rows_figure([(image, "dalmatian")], model, connect_keypoints=True)
+        lines = [a for a in figure.artists if isinstance(a, ConnectionPatch)]
+        self.assertEqual(len(lines), min(len(features.keypoints), bovw.MAX_CONNECTED_KEYPOINTS))
+        thumbnails = [a for a in figure.axes[1].artists if isinstance(a, AnnotationBbox)]
+        self.assertEqual(len(thumbnails), int(np.count_nonzero(hist)))
+
+    def test_interactive_mode_predicts_only_after_classify(self) -> None:
+        model, _, _ = build_codebook(self.root, self.settings)
+        model_path = self.root / BOVW_MODEL_FILENAME
+        save_bovw_model(model, model_path)
+        settings = ClassificationSettings(model_path=str(model_path), mode="interactive")
+
+        class FakePopup:
+            def __init__(self, _parent, image, title, model, kind) -> None:
+                self.figure = histogram_rows_figure([(image, title)], model)
+
+        with mock.patch.object(bovw, "ClassificationDialog", **{"return_value.result": settings}), mock.patch.object(
+            bovw, "InteractiveClassifierPopup", FakePopup
+        ), mock.patch.object(bovw, "predict_image_probabilities") as predict:
+            result = BoVWClassificationTool().run(_parent(), _document(_class_image(1, 7)))
+        predict.assert_not_called()
+        self.assertNotIn("Predicted class", result.details)
+        self.assertIn("Classify", result.message)
+
+    def test_trained_classifier_is_reused(self) -> None:
+        model, _, _ = build_codebook(self.root, self.settings)
+        trained = fit_classifier(model, "logistic")
+        with mock.patch.object(bovw, "fit_classifier") as refit:
+            pred, *_ = predict_image_probabilities(_class_image(0, 9), model, "logistic", trained)
+        refit.assert_not_called()
+        self.assertIn(pred, CLASSES)
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,8 +10,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
-from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib import colormaps
 from matplotlib.figure import Figure
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import ConnectionPatch
 import numpy as np
 from PIL import Image, UnidentifiedImageError
@@ -39,10 +40,37 @@ from .feature_matching import (
     prepare_gray,
 )
 from .hog import show_figure
-from .image_lookup import list_images
+from .image_lookup import IMAGE_SUFFIXES, SKIPPED_DIRS, list_images
+from .progress import ProgressPopup
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BOVW_DATASET = PROJECT_ROOT / "datasets" / "bovw_dataset"
+# The class material: Caltech-101 subset (butterfly, dalmatian, kangaroo) unzipped into images/
+CLASS_BOVW_DATASET = PROJECT_ROOT / "images" / "Caltech_101_subset" / "Caltech_101_subset"
+
+
+def default_bovw_dataset() -> Path:
+    """``datasets/bovw_dataset`` if it exists, else the class's Caltech-101 subset."""
+    return DEFAULT_BOVW_DATASET if DEFAULT_BOVW_DATASET.is_dir() or not CLASS_BOVW_DATASET.is_dir() else CLASS_BOVW_DATASET
+
+
+def dataset_root(folder: Path) -> Path:
+    """Step into a lone wrapper folder (``Caltech_101_subset/Caltech_101_subset/<class>``) so classes are found.
+
+    Unzipped archives often add one extra level, plus ``__MACOSX`` metadata that is ignored.
+    """
+    root = Path(folder)
+    while True:
+        if any(path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES for path in root.iterdir()):
+            return root
+        subfolders = [
+            path
+            for path in root.iterdir()
+            if path.is_dir() and path.name not in SKIPPED_DIRS and not path.name.startswith(".")
+        ]
+        if len(subfolders) != 1 or subfolders[0].name in (TRAIN_DIR, TEST_DIR):
+            return root
+        root = subfolders[0]
 BOVW_MODEL_FILENAME = "bovw_model.npz"
 MODEL_TYPES = [("BoVW model", "*.npz"), ("All files", "*.*")]
 
@@ -52,6 +80,9 @@ CLUSTERS_OVERRIDE_RANGE = (0, 2000)  # 0 = use words_per_class * num_classes
 PATCH_SIZE = 28  # side length (px) of each visual word thumbnail (vw 0 .. vw K-1)
 MAX_DISPLAY_WORDS = 100
 MAX_TEST_HISTOGRAMS = 6
+MAX_CONNECTED_KEYPOINTS = 150  # lines drawn per image in the 7.2 figure
+N_KEYPOINT_SAMPLES = 10  # training images with keypoints shown in 7.1 (2 rows of 5, as on the slide)
+MAX_SAMPLE_KEYPOINTS = 60  # red dots drawn per sample image in 7.1
 MODEL_SEARCH_DEPTH = 4
 AUTO_TEST_FRACTION = 0.25
 RANDOM_SEED = 0
@@ -80,7 +111,7 @@ _LAST_MODEL_PATH: Path | None = None
 
 @dataclass(frozen=True)
 class CodebookSettings:
-    folder: str = str(DEFAULT_BOVW_DATASET)
+    folder: str = str(default_bovw_dataset())
     descriptor: str = "sift"
     words_per_class: int = WORDS_PER_CLASS_DEFAULT
     n_clusters_override: int = 0  # 0 -> K = words_per_class * num_classes
@@ -139,6 +170,7 @@ class BoVWModel:
     sigma_min: float
     max_side: int
     root: Path | None = None
+    n_descriptors: int = 0  # rows of the stacked descriptor matrix K-Means was fitted on
 
     @property
     def n_words(self) -> int:
@@ -253,6 +285,7 @@ def build_codebook(
     Returns ``(model, sample_keypoints_visuals, unreadable_paths)`` where ``sample_keypoints_visuals``
     holds up to 10 ``(gray_image, keypoints, label)`` tuples for the keypoint preview popup on Slide 7.1.
     """
+    root = dataset_root(root)
     train_items, test_items = discover_splits(root)
     if not train_items:
         raise ValueError(f"No training images found in {root}.")
@@ -266,7 +299,7 @@ def build_codebook(
 
     # Track the source image and keypoint of every descriptor so each centroid gets its closest visual patch
     all_patch_sources: list[tuple[np.ndarray, float, float]] = []
-    sample_visuals: list[tuple[np.ndarray, np.ndarray, str]] = []
+    samples_by_class: dict[str, list[tuple[np.ndarray, np.ndarray, str]]] = {}
 
     for index, (path, label) in enumerate(train_items):
         if progress is not None:
@@ -283,8 +316,9 @@ def build_codebook(
         per_image_descriptors.append(desc)
         kept_train_paths.append(path)
         kept_train_labels.append(label)
-        if len(sample_visuals) < 10:
-            sample_visuals.append((features.gray, features.keypoints, label))
+        class_samples = samples_by_class.setdefault(label, [])
+        if len(class_samples) < N_KEYPOINT_SAMPLES:
+            class_samples.append((features.gray, features.keypoints, label))
         if len(desc) > 0:
             feature_descriptors.append(desc)
             for row, col in features.keypoints:
@@ -292,6 +326,13 @@ def build_codebook(
 
     if not feature_descriptors:
         raise ValueError("No local descriptors could be extracted from the training images.")
+
+    # Slide 7.1 shows training images of every class mixed: take them round-robin over the classes
+    sample_visuals: list[tuple[np.ndarray, np.ndarray, str]] = []
+    for round_index in range(N_KEYPOINT_SAMPLES):
+        for label in sorted(samples_by_class):
+            if round_index < len(samples_by_class[label]) and len(sample_visuals) < N_KEYPOINT_SAMPLES:
+                sample_visuals.append(samples_by_class[label][round_index])
 
     classes = sorted(set(kept_train_labels))
     if len(classes) < 2:
@@ -352,6 +393,7 @@ def build_codebook(
         sigma_min=settings.sigma_min,
         max_side=settings.max_side,
         root=root,
+        n_descriptors=len(descriptors),
     )
     return model, sample_visuals, failed
 
@@ -375,6 +417,7 @@ def save_bovw_model(model: BoVWModel, path: Path) -> None:
         n_scales=np.array(model.n_scales),
         sigma_min=np.array(model.sigma_min),
         max_side=np.array(model.max_side),
+        n_descriptors=np.array(model.n_descriptors),
     )
     _LAST_MODEL_PATH = Path(path)
 
@@ -400,6 +443,7 @@ def load_bovw_model(path: Path) -> BoVWModel:
                 sigma_min=float(data["sigma_min"]),
                 max_side=int(data["max_side"]),
                 root=Path(path).parent,
+                n_descriptors=int(data["n_descriptors"]) if "n_descriptors" in data.files else 0,
             )
             _LAST_MODEL_PATH = Path(path)
             return model
@@ -414,7 +458,7 @@ def find_bovw_model(image_path: Path | None = None) -> Path | None:
         candidates += [parent / BOVW_MODEL_FILENAME for parent in list(Path(image_path).parents)[:MODEL_SEARCH_DEPTH]]
     if _LAST_MODEL_PATH is not None:
         candidates.append(_LAST_MODEL_PATH)
-    candidates.append(DEFAULT_BOVW_DATASET / BOVW_MODEL_FILENAME)
+    candidates += [DEFAULT_BOVW_DATASET / BOVW_MODEL_FILENAME, CLASS_BOVW_DATASET / BOVW_MODEL_FILENAME]
     return next((path for path in candidates if path.is_file()), None)
 
 
@@ -454,11 +498,15 @@ def predict_image_probabilities(
     image: Image.Image,
     model: BoVWModel,
     kind: str = "svm_rbf",
+    trained: tuple[Any, StandardScaler, list[str]] | None = None,
 ) -> tuple[str, float, dict[str, float], np.ndarray]:
-    """Extract features of ``image``, build its visual-word histogram, and return ``(best_class, best_prob, probs_by_class, histogram)``."""
+    """Extract features of ``image``, build its visual-word histogram, and return ``(best_class, best_prob, probs_by_class, histogram)``.
+
+    ``trained`` is a classifier already returned by :func:`fit_classifier`; otherwise one is trained here.
+    """
     features = extract_features(image, model.matching_settings())
     histogram = build_histogram(features.descriptors, model.centroids, normalize=True)
-    clf, scaler, classes = fit_classifier(model, kind)
+    clf, scaler, classes = trained if trained is not None else fit_classifier(model, kind)
     probs = clf.predict_proba(scaler.transform(histogram.reshape(1, -1)))[0]
     prob_map = {cls: float(prob) for cls, prob in zip(classes, probs)}
     best_idx = int(np.argmax(probs))
@@ -490,12 +538,36 @@ def sample_keypoints_figure(samples: list[tuple[np.ndarray, np.ndarray, str]]) -
     for idx, (gray, keypoints, label) in enumerate(samples):
         ax = figure.add_subplot(rows, cols, idx + 1)
         ax.imshow(gray, cmap="gray")
+        if len(keypoints) > MAX_SAMPLE_KEYPOINTS:  # SIFT finds hundreds; draw a readable subset (K-Means used all)
+            keypoints = keypoints[np.random.default_rng(RANDOM_SEED).choice(len(keypoints), MAX_SAMPLE_KEYPOINTS, replace=False)]
         if len(keypoints):
-            ax.scatter(keypoints[:, 1], keypoints[:, 0], s=14, facecolors="none", edgecolors="r", linewidths=0.9)
+            ax.scatter(keypoints[:, 1], keypoints[:, 0], s=10, color="red")  # filled red dots, as on the slide
         ax.set_title(label, size=9)
         ax.set_xticks(())
         ax.set_yticks(())
     return figure
+
+
+def word_colour(word_id: int, n_words: int) -> tuple[float, float, float, float]:
+    """A distinct colour per visual word, so keypoints of the same word share a colour."""
+    return colormaps["hsv"](word_id / max(n_words, 1))
+
+
+def draw_word_thumbnails(ax: Any, model: BoVWModel, hist: np.ndarray) -> None:
+    """Small visual-word patch under every non-empty bar (the thumbnails at the foot of the bars in Slides 7.1/7.2)."""
+    zoom = min(0.5, 9.0 / max(model.n_words, 1))
+    for word_id in np.nonzero(hist)[0]:
+        thumbnail = OffsetImage(model.word_patches[int(word_id)], cmap="gray", zoom=zoom)
+        ax.add_artist(
+            AnnotationBbox(
+                thumbnail,
+                (float(word_id), 0.0),
+                xybox=(0, 6),
+                boxcoords="offset points",
+                frameon=False,
+                box_alignment=(0.5, 0.0),
+            )
+        )
 
 
 def histogram_rows_figure(
@@ -510,7 +582,6 @@ def histogram_rows_figure(
     axes = np.atleast_2d(figure.subplots(n_rows, 2, gridspec_kw={"width_ratios": [1.0, 1.45]}))
 
     match_settings = model.matching_settings()
-    colours = ("tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown", "tab:pink", "tab:cyan")
 
     for row_idx, (image, title) in enumerate(items):
         ax_img, ax_hist = axes[row_idx, 0], axes[row_idx, 1]
@@ -523,7 +594,7 @@ def histogram_rows_figure(
         ax_img.set_xticks(())
         ax_img.set_yticks(())
 
-        bars = ax_hist.bar(
+        ax_hist.bar(
             np.arange(k),
             hist,
             width=0.8,
@@ -538,27 +609,28 @@ def histogram_rows_figure(
         upper = max(float(hist.max()) * 1.15, 0.05)
         ax_hist.set_ylim(0.0, upper)
         ax_hist.grid(True, axis="y", linestyle=":", alpha=0.6)
+        draw_word_thumbnails(ax_hist, model, hist)
 
-        # Highlight a few representative keypoints and connect them to their assigned visual word bars (as in Slide 7.2)
+        # Slide 7.2: every keypoint, coloured by its visual word, linked by a thin line to the top of that word's bar
         if connect_keypoints and len(words) > 0:
-            unique_words = np.unique(words)
-            chosen_words = unique_words[: min(10, len(unique_words))]
-            for c_idx, word_id in enumerate(chosen_words):
-                kp_indices = np.nonzero(words == word_id)[0]
-                kp_row, kp_col = features.keypoints[int(kp_indices[0])]
-                colour = colours[c_idx % len(colours)]
-                ax_img.plot(kp_col, kp_row, marker="o", markersize=4, color=colour)
-                bars[int(word_id)].set_edgecolor(colour)
-                conn = ConnectionPatch(
-                    xyA=(kp_col, kp_row),
-                    coordsA=ax_img.transData,
-                    xyB=(float(word_id), float(hist[int(word_id)])),
-                    coordsB=ax_hist.transData,
-                    color=colour,
-                    alpha=0.35,
-                    linewidth=0.8,
+            shown = np.arange(len(words))
+            if len(shown) > MAX_CONNECTED_KEYPOINTS:  # keep the figure readable for SIFT's hundreds of keypoints
+                shown = np.random.default_rng(RANDOM_SEED).choice(shown, MAX_CONNECTED_KEYPOINTS, replace=False)
+            for kp_index in shown:
+                word_id = int(words[kp_index])
+                kp_row, kp_col = features.keypoints[int(kp_index)]
+                ax_img.plot(kp_col, kp_row, marker="o", markersize=3.5, color=word_colour(word_id, k), zorder=3)
+                figure.add_artist(
+                    ConnectionPatch(
+                        xyA=(kp_col, kp_row),
+                        coordsA=ax_img.transData,
+                        xyB=(float(word_id), float(hist[word_id])),
+                        coordsB=ax_hist.transData,
+                        color="gray",
+                        alpha=0.3,
+                        linewidth=0.5,
+                    )
                 )
-                figure.add_artist(conn)
         elif len(features.keypoints) > 0:
             ax_img.scatter(
                 features.keypoints[:, 1],
@@ -743,7 +815,7 @@ class CodebookBuilderTool(ForensicsTool):
     requires_image = False
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
-        default_folder = str(_LAST_MODEL_PATH.parent) if _LAST_MODEL_PATH else str(DEFAULT_BOVW_DATASET)
+        default_folder = str(_LAST_MODEL_PATH.parent) if _LAST_MODEL_PATH else str(default_bovw_dataset())
         settings = CodebookDialog(
             parent,
             title="Codebook construction (Set 7.1)",
@@ -752,21 +824,21 @@ class CodebookBuilderTool(ForensicsTool):
         if settings is None:
             return None
 
-        root = Path(settings.folder)
         window = parent.winfo_toplevel()
         previous_title = window.title()
-
-        def progress(index: int, total: int, path: Path) -> None:
-            window.title(f"Extracting descriptors {index + 1}/{total}: {path.name}")
-            window.update_idletasks()
-
         window.configure(cursor="watch")
         try:
-            model, sample_visuals, failed = build_codebook(root, settings, progress=progress)
-            window.title("Clustering visual words with MiniBatchKMeans…")
-            window.update_idletasks()
-            model_path = root / BOVW_MODEL_FILENAME
-            save_bovw_model(model, model_path)
+            with ProgressPopup(parent, "Codebook construction", "Extracting descriptors…") as popup:
+
+                def progress(index: int, total: int, path: Path) -> None:
+                    window.title(f"Extracting descriptors {index + 1}/{total}: {path.name}")
+                    popup.step(index, total, f"Extracting {settings.descriptor.upper()} descriptors: {path.parent.name}/{path.name}")
+
+                model, sample_visuals, failed = build_codebook(Path(settings.folder), settings, progress=progress)
+                assert model.root is not None
+                root = model.root  # the folder that holds the classes (a lone wrapper folder is skipped)
+                model_path = root / BOVW_MODEL_FILENAME
+                popup.run(f"Saving {BOVW_MODEL_FILENAME}…", lambda: save_bovw_model(model, model_path))
         finally:
             window.configure(cursor="")
             window.title(previous_title)
@@ -783,6 +855,8 @@ class CodebookBuilderTool(ForensicsTool):
             "Visual words (K)": f"{model.n_words} (10 × {len(model.classes)} classes)"
             if settings.n_clusters_override == 0 and settings.words_per_class == 10
             else str(model.n_words),
+            "Stacked descriptors (np.vstack)": f"{model.n_descriptors} × {model.centroids.shape[1]}",
+            "K-Means": f"MiniBatchKMeans(n_clusters={model.n_words}, random_state={RANDOM_SEED})",
             "Centroid shape": f"{model.centroids.shape[0]} × {model.centroids.shape[1]}",
             "Model saved to": str(model_path),
         }
@@ -949,6 +1023,7 @@ class InteractiveClassifierPopup:
         self.predicted_class = ""
         self.top_probability = 0.0
         self.probabilities: dict[str, float] = {}
+        self.trained = fit_classifier(model, classifier_kind)  # trained once on the 7.1 training histograms
 
         self.window = tk.Toplevel(parent)
         self.window.title("Set 7.3 Classification — Visualize histogram & Classify")
@@ -970,7 +1045,7 @@ class InteractiveClassifierPopup:
 
     def run_classify(self) -> None:
         pred_cls, best_prob, prob_map, _hist = predict_image_probabilities(
-            self.image, self.model, self.classifier_kind
+            self.image, self.model, self.classifier_kind, self.trained
         )
         self.classified = True
         self.predicted_class = pred_cls
@@ -1074,20 +1149,28 @@ class BoVWClassificationTool(ForensicsTool):
         if settings.mode == "evaluate":
             return self._evaluate_test_set(model, settings)
 
-        pred_cls, best_prob, prob_map, _hist = predict_image_probabilities(
-            document.current, model, settings.classifier
-        )
         img_title = document.path.stem if document.path else "query"
-
-        if settings.mode == "interactive":
-            popup = InteractiveClassifierPopup(parent, document.current, img_title, model, settings.classifier)
-            parent.winfo_toplevel()._bovw_popup = popup  # keep reference alive
-
         details: dict[str, Any] = {
             "Operation": "BoVW Image Classification (Set 7.3)",
             "Model": settings.model_path,
             "Classifier": CLASSIFIERS[settings.classifier],
             "Visual words (K)": model.n_words,
+        }
+
+        if settings.mode == "interactive":
+            # Slide 7.3: show the 7.2 histogram first; the prediction only appears after clicking "Classify"
+            popup = InteractiveClassifierPopup(parent, document.current, img_title, model, settings.classifier)
+            parent.winfo_toplevel()._bovw_popup = popup  # keep reference alive
+            return ToolResult(
+                image=figure_to_image(popup.figure),
+                message="Histogram of visual words shown — click 'Classify' in the popup to run the classifier.",
+                details=details,
+            )
+
+        pred_cls, best_prob, prob_map, _hist = predict_image_probabilities(
+            document.current, model, settings.classifier
+        )
+        details |= {
             "Predicted class": pred_cls,
             "Top probability": f"p({pred_cls}) = {best_prob:.2f}",
         }
