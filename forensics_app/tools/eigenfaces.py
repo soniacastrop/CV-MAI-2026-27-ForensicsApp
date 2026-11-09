@@ -22,6 +22,7 @@ from .dialog_fields import read_number, spin_row
 from .hog import show_figure
 from .image_lookup import list_images
 from .modes import split_alpha
+from .progress import ProgressPopup
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET = PROJECT_ROOT / "datasets" / "lfw_faces"  # datasets/ is git-ignored
@@ -436,7 +437,11 @@ class EigenfaceDialog(simpledialog.Dialog):
         self.configure(cursor="watch")
         self.update_idletasks()
         try:
-            n_train, n_test, names = export_lfw(folder)
+            with ProgressPopup(self, "Download LFW") as popup:
+                n_train, n_test, names = popup.run(
+                    "Downloading LFW and saving train/test images (about 200 MB the first time)…",
+                    lambda: export_lfw(folder),
+                )
         except Exception as error:  # network, disk, scikit-learn missing…
             messagebox.showerror(self.title(), f"Could not export LFW: {error}", parent=self)
             return
@@ -490,22 +495,30 @@ class EigenfaceBuilderTool(ForensicsTool):
         window = parent.winfo_toplevel()
         previous_title = window.title()
 
-        def progress(index: int, total: int, path: Path) -> None:
-            if index % 50 == 0 or index == total - 1:
-                window.title(f"Loading faces {index + 1}/{total}")
-                window.update_idletasks()
-
         window.configure(cursor="watch")
         try:
-            faces, failed = load_faces(train, progress=progress)
-            if len(faces.data) < 2:
-                return ToolResult(message=f"Need at least 2 face images in {train}; found {len(faces.data)}.")
-            check_identity_labels(faces.labels, train)  # before anything is saved
-            window.title("Computing eigenfaces…")
-            window.update_idletasks()
-            model = fit_eigenfaces(faces, settings.n_components, root)
-            model_path = root / MODEL_FILENAME
-            save_model(model, model_path)
+            with ProgressPopup(parent, "Eigenface builder", f"Loading faces from {train}…") as popup:
+
+                def progress(index: int, total: int, path: Path) -> None:
+                    if index % 20 == 0 or index == total - 1:
+                        window.title(f"Loading faces {index + 1}/{total}")
+                        popup.step(index, total, f"Loading faces: {path.parent.name}/{path.name}")
+
+                faces, failed = load_faces(train, progress=progress)
+                if len(faces.data) < 2:
+                    return ToolResult(message=f"Need at least 2 face images in {train}; found {len(faces.data)}.")
+                check_identity_labels(faces.labels, train)  # before anything is saved
+                window.title("Computing eigenfaces…")
+                model = popup.run(
+                    f"Computing eigenfaces (SVD of {len(faces.data)} × {faces.data.shape[1]})…",
+                    lambda: fit_eigenfaces(faces, settings.n_components, root),
+                )
+                model_path = root / MODEL_FILENAME
+                popup.run(f"Saving {MODEL_FILENAME}…", lambda: save_model(model, model_path))
+                gallery = popup.run(
+                    "Drawing eigenfaces…",
+                    lambda: eigenface_gallery(model, settings.n_display, settings.include_mean),
+                )
         finally:
             window.configure(cursor="")
             window.title(previous_title)
@@ -534,7 +547,7 @@ class EigenfaceBuilderTool(ForensicsTool):
             show_figure(parent, "Eigenfaces: scree graph and PoV", variance_figure(model))
 
         return ToolResult(
-            image=eigenface_gallery(model, settings.n_display, settings.include_mean),
+            image=gallery,
             message=(
                 f"Built {model.n_components} eigenfaces from {len(faces.data)} faces of {len(people)} people "
                 f"(PoV {model.pov[-1]:.1%}); saved {MODEL_FILENAME}."

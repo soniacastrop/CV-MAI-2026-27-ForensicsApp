@@ -630,3 +630,34 @@ class YuNetOnLenaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProgressPopupTests(unittest.TestCase):
+    def test_without_tk_parent_runs_inline(self) -> None:
+        from forensics_app.tools.progress import ProgressPopup
+
+        with ProgressPopup(mock.Mock(), "t") as popup:
+            popup.step(0, 3, "x")
+            self.assertEqual(popup.run("y", lambda: 42), 42)
+
+    def test_with_tk_runs_in_thread_and_reraises(self) -> None:
+        import threading
+        import tkinter as tk
+
+        from forensics_app.tools.progress import ProgressPopup
+
+        try:
+            root = tk.Tk()
+        except tk.TclError:
+            self.skipTest("no display")
+        root.withdraw()
+        try:
+            with ProgressPopup(root, "t") as popup:
+                popup.step(4, 10, "loading")
+                self.assertEqual(popup.bar["value"], 5)
+                self.assertNotEqual(popup.run("work", threading.get_ident), threading.get_ident())
+                with self.assertRaisesRegex(ValueError, "boom"):
+                    popup.run("fail", lambda: (_ for _ in ()).throw(ValueError("boom")))
+            self.assertIsNone(popup.window)
+        finally:
+            root.destroy()
