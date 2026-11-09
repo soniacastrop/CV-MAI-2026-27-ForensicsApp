@@ -151,6 +151,38 @@ def label_for(path: Path, root: Path) -> str:
     return person_name(path.stem.rstrip("0123456789_- ") or path.stem)
 
 
+SPLIT_WORDS = {"train", "training", "test", "testing", "val", "valid", "validation"}
+
+
+def is_split_name(label: str) -> bool:
+    """``True`` for names like ``train data`` / ``test_data``: a dataset split, not a person."""
+    return any(word in SPLIT_WORDS for word in label.lower().replace("_", " ").replace("-", " ").split())
+
+
+def check_identity_labels(labels: list[str] | np.ndarray, folder: Path | str | None = None) -> None:
+    """Refuse labels that cannot be people: split folders (``train_data``) or a single class.
+
+    Eigenface recognition answers "who is this?", so every label must be a person's folder name.
+    """
+    where = f" in {folder}" if folder else ""
+    names = sorted({str(label) for label in labels})
+    splits = [name for name in names if is_split_name(name)]
+    if splits:
+        raise ValueError(
+            f"The labels{where} are {', '.join(repr(s) for s in splits)}: dataset splits, not people.\n\n"
+            "The label is the folder directly under the face folder, so it must look like "
+            "<face folder>/train/<Person>/*.png (and test/<Person>/*.png). This folder has no 'train' "
+            "subfolder, so every image (test included) would be used for training and named after its split.\n\n"
+            "Choose a folder with train/ and test/ subfolders, one folder per person (e.g. datasets/lfw_faces, "
+            "or use 'Download LFW into this folder…')."
+        )
+    if len(names) < 2:
+        raise ValueError(
+            f"Only one label{where} ({names[0] if names else 'none'}): recognition needs at least 2 people, "
+            "each in their own folder (train/<Person>/*.png)."
+        )
+
+
 def face_vector(image: Image.Image, shape: tuple[int, int]) -> np.ndarray:
     """Gray, resized to ``shape`` (h, w), flattened, in [0, 1]."""
     base, _alpha = split_alpha(image)
@@ -468,6 +500,7 @@ class EigenfaceBuilderTool(ForensicsTool):
             faces, failed = load_faces(train, progress=progress)
             if len(faces.data) < 2:
                 return ToolResult(message=f"Need at least 2 face images in {train}; found {len(faces.data)}.")
+            check_identity_labels(faces.labels, train)  # before anything is saved
             window.title("Computing eigenfaces…")
             window.update_idletasks()
             model = fit_eigenfaces(faces, settings.n_components, root)
@@ -517,6 +550,8 @@ __all__ = [
     "EigenfaceSettings",
     "FaceSet",
     "MODEL_FILENAME",
+    "check_identity_labels",
+    "is_split_name",
     "components_for",
     "eigenface_gallery",
     "export_lfw",

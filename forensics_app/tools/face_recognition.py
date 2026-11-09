@@ -24,6 +24,7 @@ from .eigenfaces import (
     MODEL_FILENAME,
     TEST_DIR,
     EigenfaceModel,
+    check_identity_labels,
     face_vector,
     figure_to_image,
     gallery_figure,
@@ -67,13 +68,31 @@ class Neighbour:
     distance: float
 
 
+def load_recognition_model(path: Path) -> EigenfaceModel:
+    """:func:`load_model`, refusing models whose labels are not people (e.g. built on ``train_data/``)."""
+    model = load_model(path)
+    try:
+        check_identity_labels(model.labels)
+    except ValueError as error:
+        raise ValueError(f"{path} cannot be used for recognition.\n\n{error}\n\nRebuild it with the Eigenface builder.") from None
+    return model
+
+
+def is_usable_model(path: Path) -> bool:
+    try:
+        load_recognition_model(path)
+    except ValueError:
+        return False
+    return True
+
+
 def find_model(image_path: Path | None) -> Path | None:
-    """A saved model next to the image or in one of its parent folders, else in the default dataset."""
+    """A usable saved model next to the image or in one of its parent folders, else in the default dataset."""
     candidates: list[Path] = []
     if image_path is not None:
         candidates += [parent / MODEL_FILENAME for parent in list(Path(image_path).parents)[:MODEL_SEARCH_DEPTH]]
     candidates.append(DEFAULT_DATASET / MODEL_FILENAME)
-    return next((path for path in candidates if path.is_file()), None)
+    return next((path for path in candidates if path.is_file() and is_usable_model(path)), None)
 
 
 def nearest_faces(
@@ -366,7 +385,7 @@ class FaceRecognitionTool(ForensicsTool):
         settings = RecognitionDialog(parent, find_model(document.path)).result
         if settings is None:
             return None
-        model = load_model(Path(settings.model_path))
+        model = load_recognition_model(Path(settings.model_path))
         if settings.n_components > model.n_components:
             raise ValueError(f"The model has only {model.n_components} eigenfaces.")
         k = settings.n_components or model.n_components
@@ -447,7 +466,14 @@ class FaceRecognitionTool(ForensicsTool):
         faces, failed = load_faces(test, model.shape)
         known = [i for i, label in enumerate(faces.labels) if label in set(model.labels)]
         if not known:
-            return ToolResult(message=f"No test faces of people in the model found in {test}.", details=details)
+            found = ", ".join(sorted(set(faces.labels))[:8]) or "no images"
+            people = ", ".join(sorted(set(model.labels))[:8])
+            raise ValueError(
+                f"No test faces of people in the model found in {test}.\n\n"
+                f"Test labels (folder names): {found}\nPeople in the model: {people}\n\n"
+                "The test folder needs one subfolder per person, named like the training folders "
+                "(test/<Person>/*.png)."
+            )
         data = faces.data[known]
         truths = [faces.labels[i] for i in known]
         predictions = predict(model, data, k, settings.whiten)
@@ -479,6 +505,8 @@ __all__ = [
     "RecognitionSettings",
     "evaluation_gallery",
     "find_model",
+    "is_usable_model",
+    "load_recognition_model",
     "nearest_faces",
     "predict",
     "query_figure_image",

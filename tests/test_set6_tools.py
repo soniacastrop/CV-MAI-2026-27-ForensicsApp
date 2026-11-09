@@ -1,4 +1,5 @@
 import csv
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -255,6 +256,30 @@ class EigenfaceToolTests(_DatasetTestCase):
         self.assertIsNone(result.image)
         self.assertIn("at least 2", result.message)
 
+    def test_split_folders_without_train_are_refused_and_nothing_is_saved(self) -> None:
+        # The CBCL layout of Set6_materials/images: train_data/faces, test_data/faces … (no train/ folder)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for split in ("train_data", "test_data"):
+                for index in range(3):
+                    path = root / split / "faces" / f"face{index}.png"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    Image.fromarray(np.full(SHAPE, 40 * index, dtype=np.uint8)).save(path)
+            with mock.patch(
+                f"{ef.__name__}.EigenfaceDialog", **{"return_value.result": EigenfaceSettings(folder=str(root))}
+            ), self.assertRaisesRegex(ValueError, "dataset splits, not people"):
+                EigenfaceBuilderTool().run(_parent(), ImageDocument())
+            self.assertFalse((root / MODEL_FILENAME).exists())
+
+    def test_label_checks(self) -> None:
+        for name in ("train data", "test_data", "Training", "val"):
+            self.assertTrue(ef.is_split_name(name), name)
+        for name in ("George W Bush", "Contest Winner", "faces"):
+            self.assertFalse(ef.is_split_name(name), name)
+        ef.check_identity_labels(["Ada Lovelace", "Alan Turing"])
+        with self.assertRaisesRegex(ValueError, "at least 2 people"):
+            ef.check_identity_labels(["Ada Lovelace", "Ada Lovelace"])
+
 
 # ------------------------------------------------------------------ 6.3 Recognition
 
@@ -349,6 +374,26 @@ class RecognitionToolTests(_DatasetTestCase):
 
     def test_cancel(self) -> None:
         self.assertIsNone(self._run(None))
+
+    def test_model_with_split_labels_is_skipped_and_refused(self) -> None:
+        bad = replace(self._model(), labels=np.array(["train data"] * 9 + ["test data"] * 9))
+        nested = self.root / "test" / PEOPLE[1]
+        save_model(bad, nested / MODEL_FILENAME)  # closer to the image than the good model
+        self.assertFalse(fr.is_usable_model(nested / MODEL_FILENAME))
+        self.assertEqual(find_model(self.test_path), self.root / MODEL_FILENAME)  # the bad one is skipped
+        with self.assertRaisesRegex(ValueError, "cannot be used for recognition"):
+            self._run(RecognitionSettings(model_path=str(nested / MODEL_FILENAME)))
+
+    def test_evaluate_explains_mismatched_test_folders(self) -> None:
+        other = self.root / "elsewhere"
+        (other / "faces").mkdir(parents=True)
+        Image.fromarray(np.zeros(SHAPE, dtype=np.uint8)).save(other / "faces" / "x.png")
+        model = replace(load_model(self.root / MODEL_FILENAME), root=None)  # no test/ next to it: asks
+        settings = RecognitionSettings(model_path=str(self.root / MODEL_FILENAME), mode="evaluate")
+        with mock.patch(f"{fr.__name__}.load_recognition_model", return_value=model), mock.patch(
+            f"{fr.__name__}.filedialog.askdirectory", return_value=str(other)
+        ), self.assertRaisesRegex(ValueError, "Test labels \\(folder names\\): faces"):
+            self._run(settings)
 
     def test_explore_opens_the_explorer_popup(self) -> None:
         settings = RecognitionSettings(model_path=str(self.root / MODEL_FILENAME), mode="explore")
