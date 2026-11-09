@@ -345,12 +345,23 @@ class Set7BoVWTests(unittest.TestCase):
         np.testing.assert_allclose([bar.get_height() for bar in plain_figure.axes[1].patches], plain)
         self.assertFalse(HistogramSettings().tfidf)
 
+        # Comparison: image | plain | TF-IDF, same scale, same coloured words
+        both = histogram_rows_figure([(image, "butterfly")], model, compare_tfidf=True)
+        self.assertEqual(len(both.axes), 3)
+        np.testing.assert_allclose([bar.get_height() for bar in both.axes[1].patches], plain)
+        np.testing.assert_allclose([bar.get_height() for bar in both.axes[2].patches], expected)
+        self.assertEqual(both.axes[1].get_ylim(), both.axes[2].get_ylim())
+        self.assertIn("idf", both.axes[2].get_title())
+        for bar_plain, bar_weighted in zip(both.axes[1].patches, both.axes[2].patches):
+            np.testing.assert_allclose(bar_plain.get_facecolor(), bar_weighted.get_facecolor())
+
         model_path = self.root / BOVW_MODEL_FILENAME
         save_bovw_model(model, model_path)
         settings = HistogramSettings(model_path=str(model_path), mode="test_set", max_images=2, tfidf=True)
         with mock.patch.object(bovw, "HistogramDialog", **{"return_value.result": settings}):
             result = VisualWordHistogramTool().run(_parent(), _document())
         self.assertTrue(result.details["TF-IDF weighting"].startswith("yes"))
+        self.assertIn("with TF-IDF", next(v for key, v in result.details.items() if key.startswith("Image #1")))
 
     def test_trained_classifier_is_reused(self) -> None:
         model, _, _ = build_codebook(self.root, self.settings)

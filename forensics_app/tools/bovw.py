@@ -633,22 +633,54 @@ def draw_word_thumbnails(ax: Any, model: BoVWModel, hist: np.ndarray) -> None:
         )
 
 
+def draw_word_histogram(
+    ax: Any,
+    model: BoVWModel,
+    hist: np.ndarray,
+    colours: dict[int, tuple[float, float, float, float]],
+    title: str,
+    ylabel: str,
+    upper: float,
+) -> None:
+    """Bar chart of one visual-word histogram: highlighted words in colour, the rest grey, patches under the bars."""
+    k = model.n_words
+    ax.bar(
+        np.arange(k),
+        hist,
+        width=0.8,
+        color=[colours.get(word_id, OTHER_WORDS_COLOUR) for word_id in range(k)],
+        edgecolor="dimgray",
+        linewidth=0.6,
+    )
+    ax.set_title(title, size=10)
+    ax.set_xlabel("Visual word index", size=9)
+    ax.set_ylabel(ylabel, size=9)
+    ax.set_xlim(-0.8, k - 0.2)
+    ax.set_ylim(0.0, upper)
+    ax.grid(True, axis="y", linestyle=":", alpha=0.6)
+    draw_word_thumbnails(ax, model, hist)
+
+
 def histogram_rows_figure(
     items: list[tuple[Image.Image, str]],
     model: BoVWModel,
     connect_keypoints: bool = False,
     highlight_words: int = 5,
     tfidf: bool = False,
+    compare_tfidf: bool = False,
 ) -> Figure:
     """Build the Slide 7.2 figure: each row shows a test image on the left and its visual-word histogram on the right.
 
     ``tfidf`` shows the histograms reweighted by :class:`IdfWeighting` (IDF from the model's training histograms).
+    ``compare_tfidf`` shows both side by side (image | plain | TF-IDF) on the same scale; the coloured words are the
+    plain histogram's most frequent ones in both panels, so each word's change is visible.
     """
-    weighting = IdfWeighting().fit(model.train_histograms) if tfidf else None
+    weighting = IdfWeighting().fit(model.train_histograms) if (tfidf or compare_tfidf) else None
     n_rows = max(1, len(items))
-    k = model.n_words
-    figure = Figure(figsize=(11.0, 3.2 * n_rows), layout="constrained")
-    axes = np.atleast_2d(figure.subplots(n_rows, 2, gridspec_kw={"width_ratios": [1.0, 1.45]}))
+    columns = 3 if compare_tfidf else 2
+    ratios = [1.0, 1.45, 1.45] if compare_tfidf else [1.0, 1.45]
+    figure = Figure(figsize=(15.5 if compare_tfidf else 11.0, 3.2 * n_rows), layout="constrained")
+    axes = np.atleast_2d(figure.subplots(n_rows, columns, gridspec_kw={"width_ratios": ratios}))
 
     match_settings = model.matching_settings()
 
@@ -657,8 +689,9 @@ def histogram_rows_figure(
         features = extract_features(image, match_settings)
         words = assign_visual_words(features.descriptors, model.centroids)
         hist = build_histogram(features.descriptors, model.centroids, normalize=True)
-        if weighting is not None:
-            hist = weighting.transform(hist.reshape(1, -1))[0]
+        weighted = weighting.transform(hist.reshape(1, -1))[0] if weighting is not None else hist
+        if tfidf and not compare_tfidf:
+            hist = weighted
 
         ax_img.imshow(features.gray, cmap="gray")
         ax_img.set_title(title, size=10)
@@ -667,22 +700,28 @@ def histogram_rows_figure(
 
         # The most frequent words get a colour, shared by their bar and their keypoints; the rest stay grey
         colours = highlight_colours(hist, highlight_words)
-        ax_hist.bar(
-            np.arange(k),
-            hist,
-            width=0.8,
-            color=[colours.get(word_id, OTHER_WORDS_COLOUR) for word_id in range(k)],
-            edgecolor="dimgray",
-            linewidth=0.6,
-        )
-        ax_hist.set_title("TF-IDF weighted histogram of visual words" if tfidf else "Histogram of visual words", size=10)
-        ax_hist.set_xlabel("Visual word index", size=9)
-        ax_hist.set_ylabel("Normalized TF-IDF weight" if tfidf else "Normalized frequency", size=9)
-        ax_hist.set_xlim(-0.8, k - 0.2)
-        upper = max(float(hist.max()) * 1.15, 0.05)
-        ax_hist.set_ylim(0.0, upper)
-        ax_hist.grid(True, axis="y", linestyle=":", alpha=0.6)
-        draw_word_thumbnails(ax_hist, model, hist)
+        if compare_tfidf and weighting is not None:
+            upper = max(float(max(hist.max(), weighted.max())) * 1.15, 0.05)  # same scale for both panels
+            draw_word_histogram(ax_hist, model, hist, colours, "Histogram of visual words", "Normalized frequency", upper)
+            draw_word_histogram(
+                axes[row_idx, 2],
+                model,
+                weighted,
+                colours,
+                f"TF-IDF weighted (idf {weighting.idf_.min():.2f} to {weighting.idf_.max():.2f})",
+                "Normalized TF-IDF weight",
+                upper,
+            )
+        else:
+            draw_word_histogram(
+                ax_hist,
+                model,
+                hist,
+                colours,
+                "TF-IDF weighted histogram of visual words" if tfidf else "Histogram of visual words",
+                "Normalized TF-IDF weight" if tfidf else "Normalized frequency",
+                max(float(hist.max()) * 1.15, 0.05),
+            )
 
         # Keypoints: the highlighted words' in their colour (all of them), the rest as small grey dots
         if len(words) > 0:
@@ -1002,7 +1041,7 @@ class HistogramDialog(simpledialog.Dialog):
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6)
         ttk.Checkbutton(
             opts,
-            text="TF-IDF: give less weight to visual words found in most training images",
+            text="Also show the TF-IDF weighted histogram next to it, for comparison",
             variable=self.tfidf,
         ).grid(row=3, column=0, columnspan=2, sticky="w", padx=6)
         return entry
@@ -1069,7 +1108,7 @@ class VisualWordHistogramTool(ForensicsTool):
             model,
             connect_keypoints=settings.connect_keypoints,
             highlight_words=settings.highlight_words,
-            tfidf=settings.tfidf,
+            compare_tfidf=settings.tfidf,  # plain and TF-IDF side by side
         )
         out_image = figure_to_image(figure)
 
@@ -1086,12 +1125,13 @@ class VisualWordHistogramTool(ForensicsTool):
         for idx, (img, title) in enumerate(items, start=1):
             feats = extract_features(img, model.matching_settings())
             hist = build_histogram(feats.descriptors, model.centroids, normalize=True)
-            if weighting is not None:
-                hist = weighting.transform(hist.reshape(1, -1))[0]
             top_word = int(np.argmax(hist)) if len(hist) else 0
-            details[f"Image #{idx} ({title})"] = (
-                f"{len(feats.keypoints)} keypoints, peak visual word = vw {top_word} ({hist[top_word]:.2f})"
-            )
+            summary = f"{len(feats.keypoints)} keypoints, peak visual word = vw {top_word} ({hist[top_word]:.2f})"
+            if weighting is not None:
+                weighted = weighting.transform(hist.reshape(1, -1))[0]
+                top_weighted = int(np.argmax(weighted))
+                summary += f"; with TF-IDF: vw {top_weighted} ({weighted[top_weighted]:.2f})"
+            details[f"Image #{idx} ({title})"] = summary
 
         return ToolResult(
             image=out_image,
