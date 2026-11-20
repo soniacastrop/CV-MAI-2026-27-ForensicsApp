@@ -32,6 +32,8 @@ from .bovw import (
     CodebookBuilderTool,
     VisualWordHistogramTool,
 )
+from .cnn_classification import PretrainedCnnTool
+from .feature_projection import FeatureProjectionTool
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -67,6 +69,8 @@ def build_tool_registry() -> ToolRegistry:
             CodebookBuilderTool(),
             VisualWordHistogramTool(),
             BoVWClassificationTool(),
+            PretrainedCnnTool(),
+            FeatureProjectionTool(),
         ]
     )
 
