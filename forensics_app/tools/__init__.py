@@ -8,6 +8,11 @@ from .mask import MaskTool
 from .registry import ToolRegistry
 from .rotate import Rotate90Tool
 from .threshold import ThresholdTool
+from .contrast_stretching import ContrastStretchingTool
+from .histogram import HistogramTool
+from .canny import CannyTool
+from .skimage_filters import SkimageFiltersTool
+from .convolution import ConvolutionTool
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -20,6 +25,11 @@ def build_tool_registry() -> ToolRegistry:
             ThresholdTool(),
             MaskTool(),
             Rotate90Tool(),
+            HistogramTool(),
+            ContrastStretchingTool(),
+            ConvolutionTool(),
+            SkimageFiltersTool(),
+            CannyTool(),
         ]
     )
 
