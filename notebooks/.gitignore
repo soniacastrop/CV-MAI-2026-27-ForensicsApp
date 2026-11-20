@@ -1,0 +1,7 @@
+# The root .gitignore ignores models/ - keep the small trained detector here
+!models/
+# Datasets: the Roboflow zips (~160 MB each) go next to the notebook but are not committed
+data/
+*.zip
+# Training checkpoints are duplicates of models/*.pt
+runs/**/weights/
