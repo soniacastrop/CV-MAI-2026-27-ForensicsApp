@@ -345,10 +345,15 @@ def activation_map(model: Any, image: Image.Image, layer_idx: int, *, conf: floa
     A = feats["A"][0].float().cpu().numpy()  # C x h x w
     C, h, w = A.shape
     M = A.reshape(C, -1).T
+    energy = np.abs(M).mean(axis=1)  # how strongly the layer fires at each location
     M = M - M.mean(axis=0)
     _, _, Vt = np.linalg.svd(M, full_matrices=False)
-    cam = (M @ Vt[0]).reshape(h, w)
-    cam = cam if cam.sum() >= 0 else -cam  # the sign of a principal direction is arbitrary
+    pc = M @ Vt[0]
+    # The sign of a principal direction is arbitrary (and pc.sum() is always ~0 because M is centred, so it
+    # cannot be used to pick it). Orient it so that "high" means where the layer's activations are strong.
+    if np.corrcoef(pc, energy)[0, 1] < 0:
+        pc = -pc
+    cam = pc.reshape(h, w)
     cam = np.maximum(cam, 0)
     cam /= cam.max() + 1e-9
     return detections, cam
