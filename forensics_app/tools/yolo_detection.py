@@ -367,23 +367,32 @@ def letterbox_crop(cam: np.ndarray, width: int, height: int) -> np.ndarray:
 def activation_figure(image: Image.Image, detections: Detections, cam: np.ndarray, layer_idx: int, layer_name: str) -> Figure:
     rgb = image.convert("RGB")
     heat = letterbox_crop(cam, rgb.width, rgb.height)
-    fig = Figure(figsize=(15, 5.4), layout="constrained")
+    fig = Figure(figsize=(16, 5.4), layout="constrained")
     panels = (
         (np.asarray(draw_detections(rgb, detections)), f"Predictions ({len(detections)} boxes)"),
         (heat, f"Activation map — layer {layer_idx} ({layer_name}), {cam.shape[1]}×{cam.shape[0]}"),
         (None, "Overlay"),
     )
+    heat_axes, mappable = [], None
     for k, (img, title) in enumerate(panels):
         ax = fig.add_subplot(1, 3, k + 1)
         if img is None:
             ax.imshow(np.asarray(rgb))
             ax.imshow(heat, cmap="jet", alpha=0.45, vmin=0, vmax=1)
+            heat_axes.append(ax)
         elif img.ndim == 2:
-            ax.imshow(img, cmap="jet", vmin=0, vmax=1)
+            mappable = ax.imshow(img, cmap="jet", vmin=0, vmax=1)
+            heat_axes.append(ax)
         else:
             ax.imshow(img)
         ax.set_title(title, fontsize=10)
         ax.axis("off")
+    # Colour legend shared by the activation map and the overlay
+    cbar = fig.colorbar(mappable, ax=heat_axes, location="right", fraction=0.025, pad=0.01)
+    cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    cbar.set_ticklabels(["0 (low)", "0.25", "0.5", "0.75", "1 (high)"])
+    cbar.set_label("activation strength (1st PC, normalised)\nred = layer responds strongly, blue = weak / none",
+                   fontsize=9)
     return fig
 
 

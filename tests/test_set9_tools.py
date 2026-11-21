@@ -173,7 +173,7 @@ class Set9RealModelTests(unittest.TestCase):
         self.assertEqual(cam.ndim, 2)
         self.assertAlmostEqual(float(cam.max()), 1.0, places=3)
         self.assertGreaterEqual(float(cam.min()), 0.0)
-        self.assertEqual(len(Y.activation_figure(image, detections, cam, 16, "C3k2").axes), 3)
+        self.assertEqual(len(Y.activation_figure(image, detections, cam, 16, "C3k2").axes), 4)  # 3 panels + colorbar
         with self.assertRaises(ValueError):
             Y.activation_map(model, image, 99)
 
