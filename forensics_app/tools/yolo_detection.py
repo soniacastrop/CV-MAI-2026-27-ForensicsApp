@@ -320,29 +320,58 @@ def count_scatter_figure(gt_counts: dict[str, list[int]], pred_counts: dict[str,
 # ---------------------------------------------------------------- analysis: activation map
 
 
+def _network_layers(model: Any, image: Image.Image) -> Any:
+    """The layer list of the network that ``predict()`` really runs (a fused copy living in ``model.predictor``)."""
+    if getattr(model, "predictor", None) is None:
+        model.predict(image.convert("RGB"), verbose=False)
+    return model.predictor.model.model.model
+
+
+def detection_scale_layers(model: Any, image: Image.Image) -> list[int]:
+    """Indices of the feature maps fed to the Detect head (YOLO11: 16 = P3/8, 19 = P4/16, 22 = P5/32)."""
+    head = _network_layers(model, image)[-1]
+    inputs = getattr(head, "f", None)
+    return [int(i) for i in inputs] if isinstance(inputs, (list, tuple)) else [16, 19, 22]
+
+
+def activation_maps(
+    model: Any, image: Image.Image, layer_idxs: list[int], *, conf: float = 0.25
+) -> tuple[Detections, dict[int, np.ndarray]]:
+    """Activation maps of several layers from a single forward pass (see :func:`activation_map`)."""
+    rgb = image.convert("RGB")
+    layers = _network_layers(model, rgb)
+    for layer_idx in layer_idxs:
+        if not 0 <= layer_idx < len(layers) - 1:
+            raise ValueError(f"Layer index must be between 0 and {len(layers) - 2} (the last layer is the Detect head).")
+    feats: dict[int, Any] = {}
+
+    def make_hook(layer_idx: int) -> Any:
+        def hook(_module: Any, _inputs: Any, output: Any) -> None:
+            feats[layer_idx] = (output[0] if isinstance(output, (tuple, list)) else output).detach()
+
+        return hook
+
+    handles = [layers[i].register_forward_hook(make_hook(i)) for i in layer_idxs]
+    try:
+        detections, _ = predict(model, rgb, conf=conf)
+    finally:
+        for handle in handles:
+            handle.remove()
+    return detections, {i: principal_activation(feats[i][0].float().cpu().numpy()) for i in layer_idxs}
+
+
 def activation_map(model: Any, image: Image.Image, layer_idx: int, *, conf: float = 0.25) -> tuple[Detections, np.ndarray]:
     """Gradient-free activation map: first principal component of layer ``layer_idx``'s feature map (C × h × w).
 
     The (h·w) × C matrix of activations is centred and projected onto its dominant direction (SVD), giving the main
     spatial activation pattern of that layer, normalised to [0, 1].
     """
-    rgb = image.convert("RGB")
-    if getattr(model, "predictor", None) is None:  # predict() runs a fused copy that lives in model.predictor
-        model.predict(rgb, verbose=False)
-    layers = model.predictor.model.model.model
-    if not 0 <= layer_idx < len(layers) - 1:
-        raise ValueError(f"Layer index must be between 0 and {len(layers) - 2} (the last layer is the Detect head).")
-    feats: dict[str, Any] = {}
+    detections, maps = activation_maps(model, image, [layer_idx], conf=conf)
+    return detections, maps[layer_idx]
 
-    def hook(_module: Any, _inputs: Any, output: Any) -> None:
-        feats["A"] = (output[0] if isinstance(output, (tuple, list)) else output).detach()
 
-    handle = layers[layer_idx].register_forward_hook(hook)
-    try:
-        detections, _ = predict(model, rgb, conf=conf)
-    finally:
-        handle.remove()
-    A = feats["A"][0].float().cpu().numpy()  # C x h x w
+def principal_activation(A: np.ndarray) -> np.ndarray:
+    """First principal component of a C × h × w feature map, oriented, ReLU'd and scaled to [0, 1]."""
     C, h, w = A.shape
     M = A.reshape(C, -1).T
     energy = np.abs(M).mean(axis=1)  # how strongly the layer fires at each location
@@ -356,7 +385,7 @@ def activation_map(model: Any, image: Image.Image, layer_idx: int, *, conf: floa
     cam = pc.reshape(h, w)
     cam = np.maximum(cam, 0)
     cam /= cam.max() + 1e-9
-    return detections, cam
+    return cam
 
 
 def letterbox_crop(cam: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -367,6 +396,44 @@ def letterbox_crop(cam: np.ndarray, width: int, height: int) -> np.ndarray:
     x0, y0 = int(round((w - cw) / 2)), int(round((h - ch) / 2))
     cropped = cam[y0 : y0 + max(int(round(ch)), 1), x0 : x0 + max(int(round(cw)), 1)]
     return cv2.resize(cropped.astype(np.float32), (width, height), interpolation=cv2.INTER_CUBIC).clip(0, 1)
+
+
+SCALE_HINTS = {  # position of a Detect-head input -> what that scale is for
+    0: "P3, stride 8: small objects (platelets)",
+    1: "P4, stride 16: medium objects (RBCs)",
+    2: "P5, stride 32: large objects (WBCs)",
+}
+
+
+def activation_comparison_figure(
+    image: Image.Image, detections: Detections, maps: dict[int, np.ndarray], layer_names: dict[int, str]
+) -> Figure:
+    """One column per detection scale: activation map on top, overlay on the image below, shared colour scale."""
+    rgb = image.convert("RGB")
+    n = len(maps)
+    fig = Figure(figsize=(5 * n + 1, 10), layout="constrained")
+    axes, mappable = [], None
+    for k, (layer_idx, cam) in enumerate(maps.items()):
+        heat = letterbox_crop(cam, rgb.width, rgb.height)
+        ax_map = fig.add_subplot(2, n, k + 1)
+        mappable = ax_map.imshow(heat, cmap="jet", vmin=0, vmax=1)
+        ax_map.set_title(f"Layer {layer_idx} ({layer_names.get(layer_idx, '?')}) — {cam.shape[1]}×{cam.shape[0]} map",
+                         fontsize=10)
+        ax_over = fig.add_subplot(2, n, n + k + 1)
+        ax_over.imshow(np.asarray(rgb))
+        ax_over.imshow(heat, cmap="jet", alpha=0.45, vmin=0, vmax=1)
+        ax_over.set_title(f"Overlay — {SCALE_HINTS.get(k, '')}".rstrip(" —"), fontsize=10)
+        for ax in (ax_map, ax_over):
+            ax.axis("off")
+            axes.append(ax)
+    cbar = fig.colorbar(mappable, ax=axes, location="right", fraction=0.02, pad=0.01)
+    cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    cbar.set_ticklabels(["0 (low)", "0.25", "0.5", "0.75", "1 (high)"])
+    cbar.set_label("activation strength (1st PC, normalised)\nred = layer responds strongly, blue = weak / none",
+                   fontsize=9)
+    fig.suptitle(f"Detection scales compared ({len(detections)} boxes predicted): "
+                 "small → large objects from left to right", fontsize=11)
+    return fig
 
 
 def activation_figure(image: Image.Image, detections: Detections, cam: np.ndarray, layer_idx: int, layer_name: str) -> Figure:
@@ -479,6 +546,7 @@ class YoloSettings:
     layer_idx: int = 16
     box_source: str = "gt"  # histograms: "gt" | "pred"
     explain_bgr: bool = False
+    compare_layers: bool = False  # activation map: all detection scales side by side
 
 
 class YoloDialog(simpledialog.Dialog):
