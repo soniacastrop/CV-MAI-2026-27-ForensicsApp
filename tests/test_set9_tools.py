@@ -177,6 +177,18 @@ class Set9RealModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Y.activation_map(model, image, 99)
 
+    def test_activation_tool_compares_detection_scales(self) -> None:
+        layers = Y.detection_scale_layers(Y.load_yolo_model(Y.default_custom_model()), Image.new("RGB", (64, 64)))
+        self.assertEqual(layers, [16, 19, 22])
+        settings = Y.YoloSettings(model_path=Y.default_custom_model(), source="file", compare_layers=True,
+                                  image_path=str(sorted(Y.DEFAULT_BLOOD_TEST_DIR.iterdir())[0]))
+        with patch.object(Y, "YoloDialog") as dialog:
+            dialog.return_value.result = settings
+            result = Y.YoloActivationMapTool().run(None, ImageDocument())
+        assert result is not None
+        self.assertIn("Layer 22 (C3k2)", " ".join(result.details))
+        self.assertIn("80 × 80", result.details["  Layer 16 (C3k2)"])
+
 
 if __name__ == "__main__":
     unittest.main()

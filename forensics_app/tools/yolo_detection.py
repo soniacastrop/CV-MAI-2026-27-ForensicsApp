@@ -602,6 +602,11 @@ class YoloDialog(simpledialog.Dialog):
             self.layer = tk.StringVar(value="16")
             spin_row(params, row, "Layer index (16 = P3/8, 19 = P4/16, 22 = P5/32)", self.layer, (0, 30), 1)
             row += 1
+            self.compare_layers = tk.BooleanVar(value=False)
+            ttk.Checkbutton(params, text="Compare the 3 detection scales (layers 16 / 19 / 22) side by side",
+                            variable=self.compare_layers).grid(row=row, column=0, columnspan=2, sticky="w",
+                                                               padx=6, pady=2)
+            row += 1
         if self.allow_folder:
             self.max_images = tk.StringVar(value="144")
             spin_row(params, row, "Max images from folder (random sample)", self.max_images, SAMPLE_RANGE, 10)
@@ -690,6 +695,7 @@ class YoloDialog(simpledialog.Dialog):
                 layer_idx=read_number(self.layer, "Layer index", (0, 30), int) if self.show_layer else 16,
                 box_source=self.box_source.get() if self.show_box_source else "gt",
                 explain_bgr=bool(self.explain_bgr.get()) if self.show_bgr else False,
+                compare_layers=bool(self.compare_layers.get()) if self.show_layer else False,
             )
         except ValueError as error:
             messagebox.showerror(self.title(), str(error), parent=self)
@@ -938,6 +944,8 @@ class YoloActivationMapTool(ForensicsTool):
         if settings is None:
             return None
         image, _path, source = _single_image(settings, document)
+        if settings.compare_layers:
+            return self._run_comparison(parent, settings, image, source)
         with ProgressPopup(parent, "Activation map") as progress:
             model = progress.run("Loading YOLO model…", lambda: load_yolo_model(settings.model_path))
             detections, cam = progress.run(
@@ -959,6 +967,32 @@ class YoloActivationMapTool(ForensicsTool):
         return ToolResult(
             message=f"Activation map of layer {settings.layer_idx} ({layer_name}) for {source}.",
             image=figure_to_image(activation_figure(image, detections, cam, settings.layer_idx, layer_name)),
+            details=details,
+        )
+
+    def _run_comparison(self, parent: tk.Misc, settings: YoloSettings, image: Image.Image, source: str) -> ToolResult:
+        with ProgressPopup(parent, "Activation map") as progress:
+            model = progress.run("Loading YOLO model…", lambda: load_yolo_model(settings.model_path))
+            layer_idxs = detection_scale_layers(model, image)
+            detections, maps = progress.run(
+                f"Computing the activation maps of layers {', '.join(map(str, layer_idxs))}…",
+                lambda: activation_maps(model, image, layer_idxs, conf=settings.conf),
+            )
+        layers = _network_layers(model, image)
+        names = {i: type(layers[i]).__name__ for i in layer_idxs}
+        details: dict[str, Any] = {
+            "Operation": "Activation maps — detection scales compared (Set 9)",
+            "Model": Path(settings.model_path).name,
+            "Image": source,
+            "Method": "1st principal component of the C × h × w activations (SVD), ReLU, normalised",
+        }
+        for k, i in enumerate(layer_idxs):
+            details[f"  Layer {i} ({names[i]})"] = f"{maps[i].shape[1]} × {maps[i].shape[0]} map — {SCALE_HINTS.get(k, '')}"
+        details["Detections"] = len(detections)
+        details |= {f"  {name}": n for name, n in detections.counts().most_common()}
+        return ToolResult(
+            message=f"Activation maps of layers {', '.join(map(str, layer_idxs))} compared for {source}.",
+            image=figure_to_image(activation_comparison_figure(image, detections, maps, names)),
             details=details,
         )
 
@@ -1038,7 +1072,10 @@ __all__ = [
     "YoloDialog",
     "YoloPretrainedTool",
     "YoloSettings",
+    "activation_comparison_figure",
     "activation_figure",
+    "activation_maps",
+    "detection_scale_layers",
     "activation_map",
     "count_figure",
     "count_scatter_figure",
