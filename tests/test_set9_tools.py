@@ -1,4 +1,4 @@
-"""Unit tests for Set 9 (YOLO): label parsing, drawing, counting, histograms and the tools end to end."""
+"""Unit tests for Set 9 (YOLO): label parsing, drawing, counting and the tools end to end."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class Set9RegistryTests(unittest.TestCase):
         ids = [t.tool_id for t in grouped[Y.CATEGORY]]
         self.assertEqual(
             ids,
-            ["yolo_pretrained", "yolo_blood_cells", "yolo_cell_count", "yolo_activation_map", "yolo_class_histograms"],
+            ["yolo_pretrained", "yolo_blood_cells", "yolo_cell_count", "yolo_activation_map"],
         )
         for tool in grouped[Y.CATEGORY]:
             self.assertFalse(tool.requires_image)
@@ -73,19 +73,6 @@ class Set9HelperTests(unittest.TestCase):
         self.assertNotEqual(drawn.tobytes(), image.tobytes())
         fig = Y.count_figure(drawn, table, "test")
         self.assertEqual(len(fig.axes), 2)
-
-    def test_class_histograms_and_figure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            images = _write_split(Path(tmp), n_images=2)
-            hists = Y.ClassHistograms()
-            for path in Y.list_images(images):
-                image = Y.open_rgb(path)
-                hists.add(image, Y.ground_truth_for(path, image, NAMES))
-            self.assertEqual(hists.n_images, 2)
-            self.assertEqual(hists.areas["RBC"], [400.0, 400.0])
-            self.assertEqual(hists.hue["WBC"].sum(), 2 * 40 * 50)
-            self.assertIn("RBC", hists.summary())
-            self.assertEqual(len(Y.histogram_figure(hists, list(NAMES.values()), "t").axes), 3)
 
     def test_letterbox_crop_removes_padding(self) -> None:
         cam = np.zeros((64, 64))
@@ -130,7 +117,7 @@ class Set9ToolTests(unittest.TestCase):
         assert result is not None
         return result
 
-    def test_blood_cell_count_and_histogram_tools(self) -> None:
+    def test_blood_cell_and_count_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             images = _write_split(Path(tmp))
             doc = ImageDocument()
@@ -146,14 +133,6 @@ class Set9ToolTests(unittest.TestCase):
             folder = Y.YoloSettings(model_path="fake.pt", source="folder", folder=str(images), max_images=10)
             result = self._run(Y.CellCountTool(), folder, doc)
             self.assertIn("3 with labels", result.details["Images"])
-
-            result = self._run(Y.PerClassHistogramTool(), folder, doc)
-            self.assertEqual(result.details["Images"], "3")
-            self.assertIn("WBC", " ".join(result.details))
-
-            pred = Y.YoloSettings(model_path="fake.pt", box_source="pred")
-            result = self._run(Y.PerClassHistogramTool(), pred, doc)
-            self.assertIn("1 predicted boxes", result.message)
 
     def test_pretrained_tool_on_image_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -36,7 +36,6 @@ from .cnn_classification import PretrainedCnnTool
 from .feature_projection import FeatureProjectionTool
 from .yolo_detection import (
     CellCountTool,
-    PerClassHistogramTool,
     YoloActivationMapTool,
     YoloBloodCellTool,
     YoloPretrainedTool,
@@ -82,7 +81,6 @@ def build_tool_registry() -> ToolRegistry:
             YoloBloodCellTool(),
             CellCountTool(),
             YoloActivationMapTool(),
-            PerClassHistogramTool(),
         ]
     )
 

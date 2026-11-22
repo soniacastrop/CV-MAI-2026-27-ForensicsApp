@@ -2,7 +2,7 @@
 
 * 9.1  run a pretrained Ultralytics model (``yolo11n.pt``, 80 COCO classes) on an image (+ "why are people blue?");
 * 9.3  run our blood-cell model (PC / RBC / WBC) and draw ground-truth vs predicted boxes;
-* extras: cell counting, a gradient-free activation map of an inner layer, per-class box-size / colour histograms.
+* extras: cell counting and a gradient-free activation map of an inner layer.
 
 Ground truth is read from the YOLO dataset layout: ``.../images/<name>.jpg`` → ``.../labels/<name>.txt``.
 """
@@ -10,7 +10,7 @@ Ground truth is read from the YOLO dataset layout: ``.../images/<name>.jpg`` →
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import random
 import tkinter as tk
@@ -468,69 +468,6 @@ def activation_figure(image: Image.Image, detections: Detections, cam: np.ndarra
     return fig
 
 
-# ---------------------------------------------------------------- analysis: per-class histograms
-
-
-@dataclass
-class ClassHistograms:
-    """Box areas and HSV hue / saturation histograms of the pixels inside the boxes, per class."""
-
-    areas: dict[str, list[float]] = field(default_factory=dict)
-    hue: dict[str, np.ndarray] = field(default_factory=dict)
-    saturation: dict[str, np.ndarray] = field(default_factory=dict)
-    n_images: int = 0
-
-    def add(self, image: Image.Image, boxes: Detections) -> None:
-        self.n_images += 1
-        hsv = cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2HSV)
-        H, W = hsv.shape[:2]
-        for (x1, y1, x2, y2), cls in zip(boxes.boxes, boxes.classes):
-            name = boxes.names.get(int(cls), str(int(cls)))
-            self.areas.setdefault(name, []).append(float(max(x2 - x1, 0) * max(y2 - y1, 0)))
-            xa, ya = int(np.clip(x1, 0, W)), int(np.clip(y1, 0, H))
-            xb, yb = int(np.clip(np.ceil(x2), 0, W)), int(np.clip(np.ceil(y2), 0, H))
-            crop = hsv[ya:yb, xa:xb].reshape(-1, 3)
-            if not len(crop):
-                continue
-            self.hue[name] = self.hue.get(name, np.zeros(180)) + np.bincount(crop[:, 0], minlength=180)[:180]
-            self.saturation[name] = self.saturation.get(name, np.zeros(256)) + np.bincount(crop[:, 1], minlength=256)
-
-    def summary(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for name, areas in self.areas.items():
-            hue = self.hue.get(name)
-            peak = f", peak hue {int(np.argmax(hue))}" if hue is not None and hue.sum() else ""
-            out[name] = f"{len(areas)} boxes, median area {np.median(areas):,.0f} px²{peak}"
-        return out
-
-
-def histogram_figure(hists: ClassHistograms, class_order: list[str], subtitle: str) -> Figure:
-    """Notebook E2: box-area distribution (log x), hue and saturation histograms per class."""
-    fig = Figure(figsize=(16, 4.6), layout="constrained")
-    ax_area, ax_hue, ax_sat = (fig.add_subplot(1, 3, k + 1) for k in range(3))
-    all_areas = [a for v in hists.areas.values() for a in v if a > 0]
-    lo, hi = (np.log10(min(all_areas)), np.log10(max(all_areas))) if all_areas else (1, 5)
-    bins = np.logspace(lo - 0.05, hi + 0.05, 50)
-    for k, name in enumerate(class_order):
-        color = class_color(name, k)
-        if hists.areas.get(name):
-            ax_area.hist([a for a in hists.areas[name] if a > 0], bins=bins, alpha=0.5, color=color,
-                         label=f"{name} (n={len(hists.areas[name])})", density=True)
-        if name in hists.hue and hists.hue[name].sum():
-            ax_hue.plot(hists.hue[name] / hists.hue[name].sum(), color=color, label=name)
-        if name in hists.saturation and hists.saturation[name].sum():
-            ax_sat.plot(hists.saturation[name] / hists.saturation[name].sum(), color=color, label=name)
-    ax_area.set(xscale="log", xlabel="box area [px²]", ylabel="density", title="Box area per class")
-    ax_hue.set(xlabel="hue (OpenCV, 0–179)", ylabel="fraction of pixels", title="Hue inside the boxes")
-    ax_sat.set(xlabel="saturation (0–255)", ylabel="fraction of pixels", title="Saturation inside the boxes")
-    for ax in (ax_area, ax_hue, ax_sat):
-        ax.grid(alpha=0.3)
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend(fontsize=8)
-    fig.suptitle(subtitle, fontsize=11)
-    return fig
-
-
 # ---------------------------------------------------------------- dialog
 
 
@@ -544,7 +481,6 @@ class YoloSettings:
     folder: str = ""
     max_images: int = 144
     layer_idx: int = 16
-    box_source: str = "gt"  # histograms: "gt" | "pred"
     explain_bgr: bool = False
     compare_layers: bool = False  # activation map: all detection scales side by side
 
@@ -563,7 +499,6 @@ class YoloDialog(simpledialog.Dialog):
         default_source: str = "canvas",
         show_iou: bool = False,
         show_layer: bool = False,
-        show_box_source: bool = False,
         show_bgr: bool = False,
     ) -> None:
         self.has_canvas_image = has_canvas_image
@@ -571,7 +506,7 @@ class YoloDialog(simpledialog.Dialog):
         self.allow_folder = allow_folder
         self.default_source = default_source if (default_source != "canvas" or has_canvas_image) else "file"
         self.show_iou, self.show_layer = show_iou, show_layer
-        self.show_box_source, self.show_bgr = show_box_source, show_bgr
+        self.show_bgr = show_bgr
         self.discovered = discover_yolo_models()
         super().__init__(parent, title=title)
 
@@ -610,14 +545,6 @@ class YoloDialog(simpledialog.Dialog):
         if self.allow_folder:
             self.max_images = tk.StringVar(value="144")
             spin_row(params, row, "Max images from folder (random sample)", self.max_images, SAMPLE_RANGE, 10)
-            row += 1
-        if self.show_box_source:
-            self.box_source = tk.StringVar(value="gt")
-            box_frame = ttk.Frame(params)
-            box_frame.grid(row=row, column=0, columnspan=2, sticky="w", padx=6, pady=2)
-            ttk.Label(box_frame, text="Boxes from:").pack(side="left")
-            ttk.Radiobutton(box_frame, text="ground-truth labels", value="gt", variable=self.box_source).pack(side="left")
-            ttk.Radiobutton(box_frame, text="model predictions", value="pred", variable=self.box_source).pack(side="left")
             row += 1
         if self.show_bgr:
             self.explain_bgr = tk.BooleanVar(value=False)
@@ -693,7 +620,6 @@ class YoloDialog(simpledialog.Dialog):
                 folder=folder,
                 max_images=read_number(self.max_images, "Max images", SAMPLE_RANGE, int) if self.allow_folder else 1,
                 layer_idx=read_number(self.layer, "Layer index", (0, 30), int) if self.show_layer else 16,
-                box_source=self.box_source.get() if self.show_box_source else "gt",
                 explain_bgr=bool(self.explain_bgr.get()) if self.show_bgr else False,
                 compare_layers=bool(self.compare_layers.get()) if self.show_layer else False,
             )
@@ -997,76 +923,12 @@ class YoloActivationMapTool(ForensicsTool):
         )
 
 
-class PerClassHistogramTool(ForensicsTool):
-    tool_id = "yolo_class_histograms"
-    title = "Per-class histograms"
-    category = CATEGORY
-    description = (
-        "What separates the classes? Box-area distribution (log scale) and HSV hue / saturation histograms of the "
-        "pixels inside the boxes, per class — from ground-truth labels or model predictions, on one image or a folder."
-    )
-    requires_image = False
-
-    def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
-        settings = YoloDialog(
-            parent, "Per-class histograms (Set 9 extra)", has_canvas_image=document.current is not None,
-            default_model=default_custom_model(), allow_folder=True, show_box_source=True,
-            default_source="folder",
-        ).result
-        if settings is None:
-            return None
-        use_gt = settings.box_source == "gt"
-        if settings.source == "folder":
-            items: list[tuple[Path | None, Image.Image | None]] = [(p, None) for p in _sample_folder(settings)]
-            where = f"{len(items)} images from {Path(settings.folder).parent.name or settings.folder}"
-        else:
-            image, path, source = _single_image(settings, document)
-            items, where = [(path, image)], source
-
-        hists = ClassHistograms()
-        skipped = 0
-        with ProgressPopup(parent, "Per-class histograms") as progress:
-            model = progress.run("Loading YOLO model…", lambda: load_yolo_model(settings.model_path))
-            names = model_names(model)
-            for k, (path, image) in enumerate(items):
-                text = f"Collecting boxes from {path.name[:40] if path else 'canvas image'}…"
-                image = image if image is not None else open_rgb(path)
-                if use_gt:
-                    progress.step(k, len(items), text)
-                    boxes = ground_truth_for(path, image, names)
-                    if boxes is None:
-                        skipped += 1
-                        continue
-                else:
-                    boxes, _ = progress.run_step(k, len(items), text,
-                                                 lambda: predict(model, image, conf=settings.conf))
-                hists.add(image, boxes)
-        if not hists.areas:
-            raise ValueError("No boxes found. For ground truth, images need YOLO label files "
-                             "(<split>/labels/<name>.txt); otherwise choose 'model predictions'.")
-        box_label = "ground-truth boxes" if use_gt else f"predicted boxes (conf ≥ {settings.conf:.2f})"
-        figure = histogram_figure(hists, list(names.values()), f"Per-class histograms — {box_label}, {where}")
-        details: dict[str, Any] = {
-            "Operation": "Per-class histograms (Set 9)",
-            "Boxes": box_label,
-            "Images": f"{hists.n_images}" + (f" ({skipped} skipped: no labels)" if skipped else ""),
-        }
-        details |= {f"  {name}": text for name, text in hists.summary().items()}
-        return ToolResult(
-            message=f"Per-class histograms of {sum(map(len, hists.areas.values()))} {box_label}.",
-            image=figure_to_image(figure),
-            details=details,
-        )
-
-
 __all__ = [
     "CATEGORY",
     "CellCountTool",
-    "ClassHistograms",
     "DEFAULT_BLOOD_TEST_DIR",
     "DEFAULT_PRETRAINED_WEIGHTS",
     "Detections",
-    "PerClassHistogramTool",
     "YoloActivationMapTool",
     "YoloBloodCellTool",
     "YoloDialog",
@@ -1085,7 +947,6 @@ __all__ = [
     "draw_detections",
     "ground_truth_for",
     "gt_vs_pred_image",
-    "histogram_figure",
     "label_path_for",
     "letterbox_crop",
     "load_yolo_model",
