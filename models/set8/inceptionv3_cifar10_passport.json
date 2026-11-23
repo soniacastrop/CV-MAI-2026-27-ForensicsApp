@@ -1,0 +1,80 @@
+{
+  "model_name": "InceptionV3 Transfer Learning (CIFAR-10)",
+  "architecture": "InceptionV3(imagenet, frozen) -> GlobalAveragePooling2D -> Dense(256) -> Dropout(0.3) -> Dense(10)",
+  "model_file": "inceptionv3_cifar10.keras",
+  "created_at": "2026-11-20T13:56:44.011102+00:00",
+  "framework": "tensorflow 2.21.0 / keras 3.15.1",
+  "dataset": "CIFAR-10 (stratified subset)",
+  "sample_size": {
+    "train": 1800,
+    "validation": 200,
+    "test": 500,
+    "total": 2500
+  },
+  "class_names": [
+    "airplane",
+    "automobile",
+    "bird",
+    "cat",
+    "deer",
+    "dog",
+    "frog",
+    "horse",
+    "ship",
+    "truck"
+  ],
+  "preprocessing": {
+    "input_height": 128,
+    "input_width": 128,
+    "channels": 3,
+    "color_mode": "RGB",
+    "normalization": "inception_v3_minus1_1",
+    "description": "Convert to RGB, resize to 128x128, cast to float32, scale to [-1, 1] via (x / 127.5) - 1.0."
+  },
+  "training_history": {
+    "accuracy": [
+      0.523888885974884,
+      0.7333333492279053,
+      0.7983333468437195,
+      0.846666693687439,
+      0.8805555701255798,
+      0.8861111402511597,
+      0.8961111307144165,
+      0.9238888621330261
+    ],
+    "loss": [
+      1.7107453346252441,
+      0.7953384518623352,
+      0.6142863035202026,
+      0.45685821771621704,
+      0.34637027978897095,
+      0.3335862457752228,
+      0.2884635031223297,
+      0.2201596200466156
+    ],
+    "val_accuracy": [
+      0.6800000071525574,
+      0.75,
+      0.7099999785423279,
+      0.7350000143051147,
+      0.7200000286102295,
+      0.7400000095367432,
+      0.7250000238418579,
+      0.7300000190734863
+    ],
+    "val_loss": [
+      0.9461696147918701,
+      0.832252025604248,
+      0.8793520927429199,
+      0.8736816644668579,
+      0.9947826862335205,
+      0.9249792695045471,
+      0.9756107926368713,
+      0.9499579071998596
+    ]
+  },
+  "test_metrics": {
+    "test_loss": 1.0970423221588135,
+    "test_accuracy": 0.7160000205039978
+  }
+}
